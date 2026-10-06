@@ -50,6 +50,17 @@ L'installeur fait, dans l'ordre :
    - **mot de passe du compte `admin`** : 12 caractères au moins, saisi deux fois, sans écho.
 5. Il démarre Rempart et attend qu'il ait créé son état chiffré, puis efface le mot de passe initial du volume : il est désormais haché dans l'état.
 
+L'interface n'écoute que sur la machine elle-même. Depuis un autre poste, deux possibilités :
+
+- tunnel SSH, sans rien changer : `ssh -L 8080:127.0.0.1:8080 utilisateur@serveur`, puis `https://localhost:8080` ;
+- l'ouvrir sur le réseau local : créez `docker-compose.override.yml` (non versionné, repris par l'installeur) avec l'adresse du serveur, puis relancez l'installeur. Restreignez alors l'accès avec `web.allowed_admins` et activez la double authentification.
+
+  ```yaml
+  services:
+    rempart:
+      ports: ["192.168.1.10:8080:8080"]
+  ```
+
 Ouvrez ensuite `https://localhost:8080` et connectez-vous en `admin`. Le navigateur prévient que le certificat est auto-signé ; c'est normal tant que vous n'en avez pas obtenu un dans Sécurité → Certificat (ACME ou CSR). Activez tout de suite la double authentification ou une clé d'accès (Réglages → Compte).
 
 Dernière étape : pointez le DNS de votre box, ou de vos postes, vers l'adresse IP de la machine.

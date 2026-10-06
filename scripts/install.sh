@@ -138,7 +138,11 @@ if [ "$QUADLET" = 1 ]; then
   $SC daemon-reload
   $SC restart rempart
 else
-  $COMPOSE -f "$FILE" up -d
+  # Réglages propres à la machine (adresse d'écoute de l'interface…) : fichier
+  # local non versionné, chargé après le fichier du dépôt.
+  OVERRIDE=""; [ "$SOFTHSM" = 0 ] && [ -f docker-compose.override.yml ] && OVERRIDE="-f docker-compose.override.yml"
+  # shellcheck disable=SC2086
+  $COMPOSE -f "$FILE" $OVERRIDE up -d
 fi
 
 # ---- effacement du mot de passe initial ----
