@@ -36,6 +36,10 @@ say() { printf '\n== %s\n' "$*"; }
 [ -t 0 ] && [ -t 1 ] || die "lancez ce script dans un terminal : il demande le mot de passe administrateur"
 
 # ---- moteur ----
+if [ -z "$ENGINE" ] && [ "$QUADLET" = 1 ]; then
+  command -v podman >/dev/null 2>&1 || die "--quadlet suppose Podman, qui n'est pas installé (apt install podman ; Quadlet exige Podman 4.4 ou plus, Debian 13 ou plus récent)"
+  ENGINE=podman
+fi
 if [ -z "$ENGINE" ]; then
   if command -v podman >/dev/null 2>&1; then ENGINE=podman
   elif command -v docker >/dev/null 2>&1; then ENGINE=docker
@@ -44,7 +48,7 @@ fi
 case "$ENGINE" in docker|podman) ;; *) die "--engine docker ou podman" ;; esac
 command -v "$ENGINE" >/dev/null 2>&1 || die "$ENGINE introuvable"
 "$ENGINE" info >/dev/null 2>&1 || die "$ENGINE ne répond pas (service arrêté, ou machine Podman à démarrer : podman machine start)"
-[ "$QUADLET" = 1 ] && [ "$ENGINE" != podman ] && die "--quadlet suppose Podman"
+[ "$QUADLET" = 1 ] && [ "$ENGINE" != podman ] && die "--quadlet suppose Podman (--engine podman)"
 [ "$QUADLET" = 1 ] && [ "$(uname -s)" != Linux ] && die "--quadlet suppose Linux et systemd"
 [ "$QUADLET" = 1 ] && [ "$SOFTHSM" = 1 ] && die "--quadlet et --softhsm ne se combinent pas : la démonstration SoftHSM passe par compose"
 
