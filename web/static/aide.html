@@ -1,0 +1,427 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Aide Rempart</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="docs.css">
+<script type="module" src="aide.js"></script>
+</head>
+<body>
+<header class="top">
+  <button class="btn menu-btn" type="button" id="menu" aria-controls="side" aria-expanded="false">Sommaire</button>
+  <a class="brand" href="/"><img src="favicon.svg" alt="">Rempart <small>Aide</small></a>
+  <nav aria-label="Pages">
+    <a href="/">Interface</a>
+    <a href="aide.html" aria-current="page">Aide</a>
+    <a href="api.html">API</a>
+    <button type="button" id="theme">Thème</button>
+  </nav>
+</header>
+<div class="layout">
+  <aside class="side" id="side" aria-label="Sommaire">
+    <label class="visually-hidden" for="filter">Rechercher dans l'aide</label>
+    <input class="search" id="filter" type="search" placeholder="Rechercher dans l'aide" autocomplete="off">
+    <nav id="toc"></nav>
+  </aside>
+  <main class="content" id="doc">
+    <h1>Aide de Rempart DNS</h1>
+    <p class="lead">Rempart bloque les publicités et les traqueurs pour tout le réseau, sert vos noms internes signés en DNSSEC et garde ses secrets chiffrés, dans un HSM s'il y en a un. Cette page explique chaque écran de l'interface et chaque réglage. La <a href="api.html">console API</a> liste et exécute toutes les commandes.</p>
+
+    <div class="cards">
+      <a href="#demarrage"><b>Premiers pas</b><span>Installer, se connecter, brancher les appareils.</span></a>
+      <a href="#groupes"><b>Contrôle parental</b><span>Groupes, services, plages horaires, SafeSearch.</span></a>
+      <a href="#zones"><b>Noms internes</b><span>nas.home.arpa plutôt que 192.168.1.10.</span></a>
+      <a href="#automatisation"><b>Automatiser</b><span>Jetons d'API, scripts, installation sans clic.</span></a>
+      <a href="#depannage"><b>Dépannage</b><span>Un site ne marche plus, l'accès est refusé…</span></a>
+      <a href="#glossaire"><b>Glossaire</b><span>DoH, DNSSEC, KEK, RPZ, TSIG…</span></a>
+    </div>
+
+    <!-- ================================================================= -->
+    <h2 id="demarrage">Premiers pas</h2>
+
+    <h3 id="installation">Installer</h3>
+    <p>Rempart tient dans une seule image de conteneur (Podman ou Docker) ou un seul binaire. L'interface est intégrée et ne dépend d'aucun service extérieur.</p>
+<pre><code>./scripts/install.sh                     # Linux, macOS ; --quadlet pour l'unité systemd (Podman)
+powershell -ExecutionPolicy Bypass -File scripts\install.ps1   # Windows</code></pre>
+    <p>L'installeur prend Podman s'il est présent, sinon Docker. Il construit l'image, puis vous demande le mot de passe du compte <code>admin</code>. Il génère la phrase du keystore et l'affiche <b>une seule fois</b> : rangez-la dans votre gestionnaire de mots de passe, elle servira pour restaurer une sauvegarde. Enfin, il démarre Rempart. Le relancer met Rempart à jour sans toucher aux secrets.</p>
+    <p>Les secrets ne sont jamais écrits dans le dossier du projet. Ils sont dans un volume dédié (<code>rempart-secrets</code>), lisible seulement par Rempart. Le mot de passe initial en est effacé dès que Rempart l'a enregistré (haché).</p>
+    <p>Ports standard : DNS 53, DNS chiffré 853 et 443, HTTP 80 (certificat ACME), interface 8080 sur la machine elle-même. Un port déjà pris arrête l'installation, avec le nom du programme qui l'occupe.</p>
+    <div class="callout"><div>En mode sans root, ouvrir le port 53 demande sur l'hôte : <code>sysctl net.ipv4.ip_unprivileged_port_start=53</code>.</div></div>
+
+    <h3 id="connexion">Se connecter</h3>
+    <ol class="steps">
+      <li>Ouvrez <code>https://&lt;serveur&gt;:8080</code>. Le certificat est auto-signé au départ : le navigateur avertit, c'est normal tant que vous n'en avez pas obtenu un (voir <a href="#certificat">Certificat</a>).</li>
+      <li>Utilisateur <code>admin</code>, avec le mot de passe choisi à l'installation. Rempart ne génère aucun mot de passe et n'écrit aucun secret dans ses journaux.</li>
+      <li>Activez tout de suite la <a href="#totp">double authentification</a> ou une <a href="#passkeys">clé d'accès</a>.</li>
+    </ol>
+
+    <h3 id="brancher">Faire utiliser Rempart par le réseau</h3>
+    <p>Rempart ne filtre que les appareils qui l'interrogent. Trois façons de les y amener :</p>
+    <ul>
+      <li><b>Par la box</b> (le plus simple) : dans les réglages DHCP de la box, indiquez l'adresse du serveur Rempart comme serveur DNS. Les appareils la reçoivent à leur prochaine connexion.</li>
+      <li><b>Par le DHCP de Rempart</b>, si la box ne permet pas de changer le DNS : voir <a href="#dhcp">Serveur DHCP</a>.</li>
+      <li><b>Appareil par appareil</b>, y compris hors de la maison : <a href="#profils">profils mobiles</a> (DoH/DoT).</li>
+    </ul>
+    <div class="callout warn"><div><b class="t">Limite du filtrage DNS</b>Un appareil qui utilise son propre résolveur chiffré, un VPN ou un relais (iCloud Private Relay…) échappe au filtrage. La catégorie « Contournement » bloque les plus connus ; pour une garantie, interdisez au pare-feu tout DNS sortant autre que Rempart.</div></div>
+
+    <h3 id="interface">L'interface en un coup d'œil</h3>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Menu</th><th>Contenu</th></tr></thead>
+      <tbody>
+        <tr><td>Tableau de bord</td><td>Requêtes, part bloquée, domaines les plus bloqués, état des résolveurs, du certificat et des clés.</td></tr>
+        <tr><td>Journal</td><td>Requêtes récentes selon le mode de confidentialité ; archives chiffrées par jour.</td></tr>
+        <tr><td>Filtrage</td><td>Listes de blocage, Ma liste, suggestions, flux RPZ, test d'un domaine.</td></tr>
+        <tr><td>Appareils</td><td>Inventaire, groupes, profils mobiles, DHCP.</td></tr>
+        <tr><td>Zones DNSSEC</td><td>Vos noms internes, leurs clés, les rotations, les secondaires.</td></tr>
+        <tr><td>Sécurité</td><td>Compte, double authentification, jetons d'API, certificat, clés et HSM, quorum, comptes d'entreprise, audit.</td></tr>
+        <tr><td>Réglages</td><td>Général, blocage, confidentialité, résolution DNS, chiffrement, exploitation (réplication, syslog, sauvegarde).</td></tr>
+      </tbody>
+    </table></div>
+    <p>Sur téléphone, les quatre premiers menus sont en bas de l'écran, les autres derrière « Plus ». Le thème clair ou sombre suit le système, ou votre choix (bouton « Changer de thème »).</p>
+
+    <!-- ================================================================= -->
+    <h2 id="tableau">Tableau de bord et journal</h2>
+    <p>Le tableau de bord résume l'activité depuis le dernier démarrage. Les statistiques restent en mémoire et repartent de zéro à chaque redémarrage : c'est un choix de confidentialité.</p>
+    <p>Deux vues : <b>Essentiel</b> (chiffres clés, activité, motifs de blocage, rythme de la semaine, points à vérifier) et <b>Complet</b> (en plus : transports chiffrés ou non, types de requêtes, codes de réponse, temps de réponse, état de chaque composant). La vue complète s'ouvre d'office quand l'instance a des zones, des flux RPZ, une réplication ou une copie vers un SIEM ; le choix est retenu par le navigateur.</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Donnée</th><th>Aucun journal</th><th>Statistiques anonymes</th><th>Journal complet</th></tr></thead>
+      <tbody>
+        <tr><td>Activité sur 1 h, 24 h, 7 jours ; rythme de la semaine</td><td>oui</td><td>oui</td><td>oui</td></tr>
+        <tr><td>Issue des requêtes, motifs de blocage (liste, Ma liste, RPZ, services, plages horaires…)</td><td>oui</td><td>oui</td><td>oui</td></tr>
+        <tr><td>Transports, types, codes de réponse, temps de réponse</td><td>oui</td><td>oui</td><td>oui</td></tr>
+        <tr><td>État du service (listes, certificat, audit, DNSSEC, zones, RPZ, réplication, SIEM, DHCP)</td><td>oui</td><td>oui</td><td>oui</td></tr>
+        <tr><td>Activité par groupe d'appareils</td><td>non</td><td>oui</td><td>oui</td></tr>
+        <tr><td>Domaines les plus bloqués</td><td>non</td><td>oui</td><td>oui</td></tr>
+        <tr><td>Domaines les plus demandés, clients les plus actifs</td><td>non</td><td>non</td><td>oui</td></tr>
+      </tbody>
+    </table></div>
+    <p>Les compteurs disponibles sans journal ne portent ni domaine ni appareil : un journal désactivé n'empêche pas de voir que le filtrage fonctionne. Passer à un mode plus strict efface aussitôt de la mémoire ce que ce mode ne garde pas.</p>
+    <h3 id="journal">Journal des requêtes</h3>
+    <p>Ce que le journal contient dépend du mode choisi dans <a href="#confidentialite">Réglages → Confidentialité</a> :</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Mode</th><th>Ce qui est gardé</th></tr></thead>
+      <tbody>
+        <tr><td>Aucun journal</td><td>Des compteurs anonymes, rien d'autre.</td></tr>
+        <tr><td>Statistiques anonymes (défaut)</td><td>Compteurs et domaines bloqués les plus fréquents. Rien par appareil.</td></tr>
+        <tr><td>Journal complet chiffré</td><td>Chaque requête, chiffrée en AES-256-GCM avec une clé par jour. À la fin de la rétention, la clé du jour est détruite : le journal devient illisible, même depuis une sauvegarde.</td></tr>
+      </tbody>
+    </table></div>
+    <p>Chaque ligne indique l'issue : <b>résolue</b>, <b>bloquée</b> (avec la liste ou la règle responsable), <b>cache</b>, <b>zone locale</b>, <b>SafeSearch</b> (réécrite), <b>refusée</b> ou <b>erreur</b>, et le groupe appliqué. Ouvrir une archive d'un jour passé est inscrit dans l'audit.</p>
+
+    <!-- ================================================================= -->
+    <h2 id="filtrage">Filtrage</h2>
+    <h3 id="listes">Listes de blocage</h3>
+    <p>Filtrage → Listes. Une liste est un fichier distant (format hosts, domaines ou Adblock) téléchargé en <code>https://</code> et rafraîchi chaque jour (<code>lists_refresh</code>). Vous pouvez épingler son empreinte SHA-256 : un contenu différent sera refusé. Une liste « d'exceptions » autorise au lieu de bloquer.</p>
+    <p>Bon point de départ : la liste HaGeZi Pro, plus large que les listes par défaut. Activez-en peu : plus de listes, c'est plus de faux positifs, pas forcément plus de protection.</p>
+
+    <h3 id="maliste">Ma liste</h3>
+    <p>Vos propres règles, prioritaires sur les listes. Un domaine couvre ses sous-domaines. Une <b>exception</b> débloque un domaine qu'une liste bloque à tort. L'import en masse accepte les domaines, le format hosts et Adblock (50 000 règles par import) ; l'export produit ces mêmes formats.</p>
+    <p><b>Tester un domaine</b> : indique s'il serait bloqué, par quelle liste ou règle, et si une zone locale y répond. Pour un appareil précis, utilisez le test d'Appareils → Groupes, qui applique son groupe.</p>
+
+    <h3 id="suggestions">Suggestions</h3>
+    <p>Une fois activée dans Réglages → Confidentialité, l'analyse examine en mémoire les noms résolus (rien n'est noté par appareil) et propose de bloquer : les CNAME vers une infrastructure de traçage connue, les sous-domaines dont les voisins sont déjà bloqués, les noms typiques de la publicité ou de la télémétrie, et les noms aléatoires inexistants, signe possible d'un logiciel malveillant. Rien ne quitte le serveur.</p>
+
+    <h3 id="rpz">Flux de menaces (RPZ)</h3>
+    <p>Filtrage → Flux RPZ. Les <i>Response Policy Zones</i> sont des listes de menaces publiées par des éditeurs spécialisés, au format de BIND. Rempart les reçoit par transfert signé (AXFR + clé TSIG de l'éditeur) ou par HTTPS. La dernière copie est scellée sur disque et protège dès le démarrage, même sans réseau.</p>
+    <ul>
+      <li>Les flux s'appliquent à <b>tous</b> les appareils, avant les groupes et leurs exceptions, pendant les pauses aussi.</li>
+      <li>Le premier flux de la liste qui correspond l'emporte : ordonnez-les par glisser-déposer.</li>
+      <li>Déclencheurs : nom demandé, cibles CNAME, adresse de réponse, adresse du client, serveurs de noms. Actions : NXDOMAIN, NODATA, PASSTHRU, DROP, TCP-ONLY, réécriture.</li>
+    </ul>
+
+    <h3 id="protections">Protections intégrées</h3>
+    <ul>
+      <li><b>Démasquage des CNAME</b> : un traqueur caché derrière un alias du site visité (<code>stats.site.fr → traqueur.net</code>) est bloqué.</li>
+      <li><b>Anti-rebinding</b> : un nom public qui répond par une adresse privée est refusé (attaque contre la box ou le NAS), sauf pour les suffixes de <code>dns.rebind_allowed_domains</code> et les domaines transférés.</li>
+      <li><b>Canari DoH</b> : Firefox est prié de ne pas activer son DoH automatique, qui contournerait Rempart.</li>
+      <li><b>Validation DNSSEC locale</b> : voir <a href="#validation">plus bas</a>.</li>
+    </ul>
+
+    <!-- ================================================================= -->
+    <h2 id="appareils">Appareils</h2>
+    <h3 id="inventaire">Inventaire</h3>
+    <p>Appareils → Tous les appareils réunit ce que Rempart sait déjà : baux de son DHCP, table de voisinage de l'hôte, membres des groupes, profils mobiles. Rien ne vient du journal des requêtes. Vous pouvez y nommer un appareil, choisir son type, le placer dans un groupe (un ou plusieurs à la fois), tester un domaine pour lui ou réserver son adresse.</p>
+    <div class="callout warn"><div><b class="t">Adresse Wi-Fi privée</b>iOS, Android et Windows changent l'adresse MAC par réseau, parfois régulièrement. Un appareil qui change d'adresse quitte son groupe : désactivez la rotation pour ce réseau, ou donnez-lui un profil mobile.</div></div>
+
+    <h3 id="groupes">Groupes et contrôle parental</h3>
+    <p>Appareils → Groupes. Un groupe réunit des appareils, désignés par adresse IP, réseau CIDR, adresse MAC ou profil, et leur applique sa propre politique. Un appareil hors de tout groupe suit la politique générale. Un appareil n'appartient qu'à un groupe ; les réseaux peuvent se recouvrir, le plus précis l'emporte.</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Élément</th><th>Effet</th></tr></thead>
+      <tbody>
+        <tr><td>Listes</td><td>Celles actives partout (option), plus des listes propres au groupe.</td></tr>
+        <tr><td>Catégories</td><td>Adultes, jeux d'argent, réseaux sociaux, moteurs sans SafeSearch, contournement (DoH/VPN/proxy), menaces : un clic.</td></tr>
+        <tr><td>Règles du groupe</td><td>Blocages et exceptions. Une exception du groupe passe tout, plages horaires comprises.</td></tr>
+        <tr><td>Services</td><td>54 services en 8 familles (réseaux sociaux, vidéo, musique, messageries, jeux, IA, achats, rencontres).</td></tr>
+        <tr><td>Plages horaires</td><td>Par jour et heure (une plage peut passer minuit) : services bloqués, ou coupure complète d'Internet.</td></tr>
+        <tr><td>SafeSearch</td><td>Google, Bing, DuckDuckGo, Yandex, Pixabay forcés en recherche filtrée.</td></tr>
+        <tr><td>YouTube</td><td>Mode restreint modéré ou strict.</td></tr>
+      </tbody>
+    </table></div>
+    <p><b>Exemple</b> : groupe « Enfants » avec la catégorie Adultes, TikTok bloqué en permanence, coupure complète de 22 h à 7 h, SafeSearch et YouTube modéré. Réglez d'abord le fuseau horaire (Réglages → Général).</p>
+    <div class="callout"><div>La <b>pause</b> d'un groupe (ou la pause générale) ne suspend que le filtrage publicitaire : catégories, plages horaires, SafeSearch et RPZ restent actifs.</div></div>
+
+    <h3 id="profils">Profils mobiles (DoH, DoT)</h3>
+    <p>Appareils → Profils mobiles crée, pour chaque appareil, une adresse DNS chiffrée qui lui est propre : <code>https://&lt;serveur&gt;/dns-query/&lt;jeton&gt;</code>. Rempart reconnaît l'appareil où qu'il soit (4G, hôtel…) et lui applique la politique de son groupe. Le jeton n'est affiché qu'une fois ; seul son SHA-256 est gardé.</p>
+    <ul>
+      <li><b>iPhone, iPad, Mac</b> : téléchargez le profil <code>.mobileconfig</code>, signé par le certificat de Rempart, puis installez-le dans Réglages.</li>
+      <li><b>Android 9+</b> : « DNS privé » n'accepte que DoT et un nom d'hôte. Utilisez le nom <code>&lt;jeton&gt;.dns.example</code> (certificat <code>*.dns.example</code> requis), ou une application DoH hors du réseau.</li>
+      <li><b>Windows 11, Firefox, Chrome</b> : collez l'adresse DoH comme serveur DNS chiffré personnalisé.</li>
+    </ul>
+    <div class="callout warn"><div>Ces clients refusent le certificat auto-signé : obtenez-en un d'abord (<a href="#certificat">Certificat</a>). L'adresse DoH d'un appareil est un secret : révoquez le profil si elle fuit. Un appareil admis par son seul jeton n'obtient que la résolution publique, ni zones locales, ni interface.</div></div>
+
+    <h3 id="dhcp">Serveur DHCP</h3>
+    <p>Appareils → DHCP, pour les box qui ne permettent pas d'annoncer un autre DNS. Rempart distribue les adresses, s'annonce comme serveur DNS et rend chaque appareil joignable sous <code>&lt;nom&gt;.home.arpa</code>.</p>
+    <ol class="steps">
+      <li>Désactivez le DHCP de la box (deux serveurs DHCP sur un réseau se marchent dessus).</li>
+      <li>Linux seulement : le conteneur doit partager le réseau de l'hôte (<code>Network=host</code> dans l'unité Quadlet, à la place des <code>PublishPort=</code>).</li>
+      <li>Choisissez l'interface, la plage, la passerelle (la box), le domaine (<code>home.arpa</code> recommandé), puis activez.</li>
+      <li>Ajoutez des baux statiques pour le NAS, l'imprimante, etc.</li>
+    </ol>
+    <p>Les baux sont scellés sur disque. Les noms <code>wpad</code>, <code>isatap</code> et <code>localhost</code> sont refusés (détournement de la découverte de proxy).</p>
+
+    <!-- ================================================================= -->
+    <h2 id="zones">Zones locales (noms internes)</h2>
+    <p>Une zone est votre domaine privé, par exemple <code>home.arpa</code>. Vous y donnez un nom à chaque appareil : <code>nas.home.arpa</code> plutôt que <code>192.168.1.10</code>. Ces noms ne servent qu'aux appareils qui utilisent Rempart.</p>
+    <h3 id="zone-creer">Créer une zone</h3>
+    <ol class="steps">
+      <li><b>Le nom.</b> <code>home.arpa</code> (réservé à cet usage, RFC 8375) est proposé d'abord. Évitez <code>.local</code>, qui gêne Bonjour et AirPrint, et un domaine public, qui serait masqué.</li>
+      <li><b>La signature DNSSEC</b> : algorithme ECDSA P-256 (défaut), P-384 ou Ed25519.</li>
+      <li><b>Les premiers appareils</b>, à cocher parmi les baux DHCP.</li>
+    </ol>
+    <h3 id="zone-noms">Ajouter un nom</h3>
+    <p>Choisissez le type : appareil (A/AAAA), alias (CNAME), messagerie (MX), texte (TXT), service (SRV) ou ligne libre. Chaque champ est vérifié pendant la saisie et une phrase résume l'effet. Après l'enregistrement, Rempart interroge la zone et montre la réponse. Le <b>mode expert</b> donne le fichier de zone complet avec « Vérifier sans enregistrer ».</p>
+
+    <h3 id="dnssec-rotation">Clés et rotations DNSSEC</h3>
+    <ul>
+      <li><b>ZSK</b> : changée automatiquement tous les 90 jours par défaut (pré-publication).</li>
+      <li><b>KSK</b> : la nouvelle clé est publiée, son DS annoncé en CDS/CDNSKEY ; elle devient active quand le DS est constaté chez le parent ou confirmé à la main (« DS publié »). L'ancienne signe encore 24 h au moins.</li>
+      <li><b>Changement d'algorithme</b> (par exemple vers Ed25519) : méthode prudente en plusieurs étapes, chacune affichée dans l'interface.</li>
+      <li><b>NSEC3</b> actif par défaut : les réponses négatives ne permettent pas d'énumérer vos noms.</li>
+    </ul>
+    <p>Pour une zone publique déléguée, copiez les DS (bouton « DS ») chez votre bureau d'enregistrement.</p>
+
+    <h3 id="secondaires">Secondaires, mises à jour dynamiques, TSIG</h3>
+    <p>Zones DNSSEC → une zone → Secondaires. La zone part signée par AXFR/IXFR vers les serveurs déclarés, avec NOTIFY à chaque changement. Toute opération exige une adresse autorisée <b>et</b> une signature TSIG (HMAC-SHA256/384/512 ; MD5 et SHA-1 refusés). Les mises à jour dynamiques (RFC 2136) permettent à un serveur DHCP (Kea, ISC, Windows) d'enregistrer ses noms ; elles ne touchent jamais les noms saisis par l'administrateur.</p>
+    <p>Rempart peut aussi servir une <b>zone secondaire</b> copiée d'un primaire (BIND, Knot, Windows DNS, autre Rempart), signatures comprises.</p>
+
+    <h3 id="validation">Validation DNSSEC</h3>
+    <p>Réglages → Blocage → Protections → « Valider DNSSEC sur ce serveur » (actif par défaut). Rempart vérifie lui-même la chaîne de confiance depuis la racine. Une réponse falsifiée est refusée (SERVFAIL, erreur étendue « DNSSEC Bogus ») et notée au journal. Les domaines transférés vers un serveur interne ne sont pas validés.</p>
+
+    <!-- ================================================================= -->
+    <h2 id="securite">Sécurité</h2>
+    <h3 id="totp">Double authentification (TOTP)</h3>
+    <ol class="steps">
+      <li>Sécurité → Compte → Double authentification : scannez le QR code avec Aegis, 2FAS, Google ou Microsoft Authenticator, 1Password, Bitwarden…</li>
+      <li>Confirmez avec un code et le mot de passe.</li>
+      <li>Rangez les 10 codes de secours affichés une seule fois.</li>
+    </ol>
+    <p>Téléphone, clés d'accès et codes perdus : redémarrez une fois avec <code>REMPART_RESET_OTP=1</code>, puis retirez la variable. La réinitialisation est inscrite dans l'audit.</p>
+
+    <h3 id="passkeys">Clés d'accès (passkeys)</h3>
+    <p>Sécurité → Compte → Clés d'accès : Windows Hello, Touch ID, passkey de téléphone, YubiKey ou Nitrokey (10 au plus). Elles remplacent le code à 6 chiffres, ou permettent la connexion sans mot de passe. Ouvrez l'interface par son <b>nom</b> (<code>rempart.maison.lan</code>), pas par son adresse IP : une clé n'est valable que pour le nom sous lequel elle a été créée.</p>
+
+    <h3 id="comptes">Comptes d'entreprise : LDAP et OIDC</h3>
+    <p>Sécurité → Comptes et annuaires. Les administrateurs se connectent avec leur compte Active Directory, OpenLDAP, FreeIPA, ou par OpenID Connect (Keycloak, Entra ID, Authentik, Okta). Leur rôle découle de leurs groupes, relus à chaque connexion :</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Rôle</th><th>Droits</th></tr></thead>
+      <tbody>
+        <tr><td>Administrateur</td><td>Tout : clés et HSM, quorum, jetons d'API, comptes externes.</td></tr>
+        <tr><td>Opérateur</td><td>Filtrage, zones et DNSSEC, résolution, certificat. Pas la sécurité.</td></tr>
+        <tr><td>Lecture seule</td><td>Consultation.</td></tr>
+      </tbody>
+    </table></div>
+    <p>Le compte local reste toujours utilisable (accès de secours), et lui seul peut modifier ces réglages. Côté Keycloak : client OpenID Connect <code>rempart</code>, authentification du client activée, <i>Standard flow</i> seul, PKCE S256, URI de redirection <code>https://&lt;serveur&gt;:8080/api/oidc/callback</code>.</p>
+
+    <h3 id="jetons">Jetons d'API</h3>
+    <p>Sécurité → Accès API crée des jetons pour vos scripts, Prometheus, la sauvegarde ou une autre instance. Le jeton (<code>rmp_…</code>) n'est montré qu'une fois. Choisissez la portée la plus étroite qui suffit :</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Portée</th><th>Permet</th><th>Exemple d'usage</th></tr></thead>
+      <tbody>
+        <tr><td><code>read</code></td><td>Consulter état, journal récent, configuration.</td><td>Tableau de bord externe</td></tr>
+        <tr><td><code>metrics</code></td><td><code>GET /metrics</code> seulement.</td><td>Prometheus</td></tr>
+        <tr><td><code>tls</code></td><td>Certificat : CSR, import, ACME.</td><td>Renouvellement par la PKI</td></tr>
+        <tr><td><code>dnssec</code></td><td>Re-signature, rotations, confirmation des DS.</td><td>Automatisation DNSSEC</td></tr>
+        <tr><td><code>admin</code></td><td>Toute la configuration (inclut read, tls, dnssec, metrics).</td><td>Ansible, installation</td></tr>
+        <tr><td><code>backup</code></td><td>Sauvegarde complète seulement. « admin » ne la permet pas.</td><td>Sauvegarde nocturne</td></tr>
+        <tr><td><code>sync</code></td><td>Réplication seulement.</td><td>Réplique</td></tr>
+      </tbody>
+    </table></div>
+    <div class="callout"><div><b class="t">Ce qu'aucun jeton ne peut faire</b>Créer d'autres jetons, changer le mot de passe ou le second facteur, toucher aux clés, au HSM, au quorum, aux clés TSIG, à la réplication et à la copie syslog. Ces actions demandent une session (un compte administrateur connecté). Ainsi, un jeton volé ne peut ni s'étendre ni se perpétuer. Pour l'automatisation, voir <a href="#automatisation">Automatiser</a>.</div></div>
+
+    <h3 id="certificat">Certificat (interface, DoT, DoH)</h3>
+    <p>Sécurité → Certificat. La clé privée reste dans le keystore (ou le HSM) ; seule une demande signée en sort.</p>
+    <ul>
+      <li><b>ACME</b> : Let's Encrypt, EJBCA, EverTrust Horizon, Smallstep, Vault… Défi <code>http-01</code> (port 80 ouvert le temps du défi) ou <code>dns-01</code> publié dans votre zone signée. Liaison de compte externe (EAB) prise en charge. Renouvellement automatique au dernier tiers de la validité.</li>
+      <li><b>CSR et import</b> pour toute autre PKI : Rempart produit la demande, vous importez la chaîne signée. Elle est vérifiée puis mise en service à chaud.</li>
+    </ul>
+
+    <h3 id="cles">Clés, HSM et quorum</h3>
+    <p>Sans HSM, les clés sont chiffrées sur disque par une <b>KEK</b>, elle-même protégée par une clé racine : phrase de passe serveur et/ou quorum de dépositaires (M sur N, partage de Shamir).</p>
+    <ul>
+      <li><b>Démarrage automatique</b> : la phrase serveur ouvre le keystore ; le quorum est exigé pour les opérations sensibles.</li>
+      <li><b>Démarrage sous quorum</b> : après chaque redémarrage, Rempart ne sert rien tant que M dépositaires n'ont pas tapé leur phrase avec <code>podman exec -it rempart rempart unseal</code>.</li>
+      <li><b>Rotation des KEK</b> : planifiée (365 jours par défaut) ou à la demande ; détruire une ancienne génération rend illisibles les sauvegardes qu'elle chiffrait.</li>
+    </ul>
+    <p><b>Passer au HSM</b> : Sécurité → Clés et HSM, assistant en quatre étapes (bibliothèque PKCS#11, token, test, programmation). Au redémarrage suivant, avec le PIN dans <code>REMPART_PKCS11_PIN_FILE</code>, Rempart importe ses clés dans le HSM. Elles sont alors marquées « importée » : faites une rotation DNSSEC et prenez un nouveau certificat pour obtenir des clés nées dans le HSM. Pour changer de HSM, clonez le token avec l'outil du constructeur, puis « Passer à un autre HSM ».</p>
+
+    <h3 id="audit">Journal d'audit</h3>
+    <p>Sécurité → Audit. Chaque action d'administration (connexion, modification, création de jeton, consultation du journal…) est inscrite dans un journal chaîné et signé : une modification ou une troncature est détectée et signalée. Il peut être copié vers un syslog ou un SIEM (<a href="#exploitation">Exploitation</a>).</p>
+
+    <!-- ================================================================= -->
+    <h2 id="reglages">Réglages</h2>
+    <h3 id="general">Général et blocage</h3>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Réglage</th><th>Valeurs</th><th>Conseil</th></tr></thead>
+      <tbody>
+        <tr><td>Réponse aux domaines bloqués</td><td>0.0.0.0 (zero), NXDOMAIN, REFUSED</td><td>0.0.0.0 : les applications abandonnent vite, sans réessayer.</td></tr>
+        <tr><td>Fuseau horaire</td><td>Nom IANA (Europe/Paris)</td><td>Indispensable aux plages horaires.</td></tr>
+        <tr><td>Protections</td><td>CNAME, anti-rebinding, canari DoH, validation DNSSEC</td><td>Laissez-les actives.</td></tr>
+      </tbody>
+    </table></div>
+    <h3 id="confidentialite">Confidentialité</h3>
+    <ul>
+      <li><b>Mode du journal</b> : aucun, statistiques anonymes, complet chiffré (voir <a href="#journal">Journal</a>).</li>
+      <li><b>Rétention</b> : 1 à 3650 jours ; à l'échéance, la clé du jour est détruite.</li>
+      <li><b>Identification des clients</b> : pseudonymisée (HMAC, clé changée chaque jour), tronquée, ou en clair.</li>
+      <li><b>Suggestions</b> : analyse en mémoire, voir <a href="#suggestions">Suggestions</a>.</li>
+    </ul>
+    <h3 id="resolution">Résolution DNS</h3>
+    <p>Profil <b>personnel</b> : résolveurs publics chiffrés, avec leur juridiction (Quad9, DNS4EU, Mullvad, Cloudflare, Google). Profil <b>entreprise</b> : en plus, résolveurs internes, transfert conditionnel par domaine (vers les contrôleurs Active Directory par exemple), AC internes, bootstrap dédié. Appliqué à chaud.</p>
+    <h3 id="chiffrement">Chiffrement (DoT, DoH, DoQ, DNSCrypt)</h3>
+    <p>Réglages → Chiffrement active ou coupe chaque protocole, sans redémarrage. Les ports viennent du fichier de configuration (<code>dot.listen</code>, <code>doh.listen</code>, <code>doq.listen</code>, <code>dnscrypt.listen</code>) et doivent correspondre aux ports publiés par le conteneur. Pour DNSCrypt, copiez le tampon <code>sdns://</code> dans dnscrypt-proxy.</p>
+
+    <h3 id="exploitation">Exploitation</h3>
+    <p><b>Réplication</b> : une instance principale publie sa configuration de filtrage ; la réplique la lit toutes les 30 secondes avec un jeton de portée <code>sync</code> et reçoit les zones par transfert signé. Avec la bascule automatique, la réplique prend le relais si la principale reste injoignable (5 minutes par défaut), puis rend la main. Annoncez les deux serveurs aux clients (champ « second serveur DNS » du DHCP).</p>
+    <p><b>Copie de l'audit vers syslog/SIEM</b> : RFC 5424 en TLS (recommandé), TCP ou UDP. Aucun événement n'est perdu si le collecteur est injoignable.</p>
+    <p><b>Sauvegarde</b> : bouton « Télécharger une sauvegarde », ou par jeton <code>backup</code> :</p>
+<pre><code>curl -fsS -H @/etc/rempart/backup.auth --cacert /etc/rempart/ac.pem \
+  https://rempart.maison.lan:8080/api/backup -o /sauvegardes/rempart-$(date +%F).tar.gz</code></pre>
+    <p>Vérifier une archive sans toucher au serveur, puis restaurer (Rempart arrêté) :</p>
+<pre><code>podman run --rm --network none -v ./:/b:Z -v rempart-secrets:/run/secrets:ro \
+  -e REMPART_KEYSTORE_PASSPHRASE_FILE=/run/secrets/keystore_passphrase \
+  localhost/rempart backup verify -config /etc/rempart/rempart.yaml /b/rempart-2026-10-06.tar.gz
+
+podman run --rm --network none -v rempart-data:/var/lib/rempart -v ./:/b:Z \
+  localhost/rempart restore -config /etc/rempart/rempart.yaml -force /b/rempart-2026-10-06.tar.gz</code></pre>
+    <div class="callout warn"><div><b class="t">Avant de restaurer</b>Restaurez ensemble les données et le keystore de la même archive, et redémarrez avec la phrase de passe (ou le quorum) <b>en vigueur à la date de la sauvegarde</b>. Avec un HSM, le token doit être dans l'état de la même date. Les jours de journal dont la clé était détruite restent illisibles.</div></div>
+
+    <h3 id="supervision">Supervision (Prometheus)</h3>
+    <p><code>GET /metrics</code> avec un jeton <code>metrics</code>. Alertes utiles :</p>
+<pre><code>rempart_audit_chain_ok == 0
+rempart_zone_signature_expiry_timestamp_seconds - time() &lt; 3*86400
+rempart_tls_certificate_expiry_timestamp_seconds - time() &lt; 14*86400
+rempart_secondary_zone_expired == 1
+rempart_rpz_error == 1
+time() - rempart_replication_last_sync_timestamp_seconds &gt; 300</code></pre>
+
+    <!-- ================================================================= -->
+    <h2 id="automatisation">Automatiser : API et jetons</h2>
+    <p>Tout ce que fait l'interface passe par l'API REST de Rempart : la <a href="api.html">console API</a> liste chaque commande, ses paramètres et ses portées, et permet de l'exécuter directement. Elle propose aussi <a href="openapi.json">openapi.json</a>, pour Postman, Insomnia ou un générateur de client.</p>
+
+    <h3 id="auth-api">Deux façons de s'authentifier</h3>
+    <ul>
+      <li><b>Jeton porteur</b> : en-tête <code>Authorization: Bearer rmp_…</code>. Pour les scripts. Pas besoin d'en-tête supplémentaire.</li>
+      <li><b>Session</b> : <code>POST /api/login</code> pose le cookie <code>rempart_session</code>. Toute requête qui modifie quelque chose doit alors porter <code>X-Rempart: 1</code> (protection contre les requêtes forgées depuis un autre site). Une session d'administrateur donne accès à <b>toutes</b> les commandes, y compris la création de jetons.</li>
+    </ul>
+
+    <h3 id="token-install">Créer un jeton avec un compte administrateur (installation automatisée)</h3>
+    <p>Un compte administrateur, local ou LDAP, peut ouvrir une session par l'API puis créer le jeton dont l'automatisation a besoin. Les scripts fournis font tout : connexion, code TOTP si nécessaire, création du jeton, écriture dans un fichier en 0600, déconnexion.</p>
+<pre><code># Linux / macOS : mot de passe demandé sans écho (ou REMPART_PASSWORD_FILE), jamais en argument
+./scripts/rempart-token.sh -u https://rempart.maison.lan:8080 \
+  -n installation -s admin -d 1 -o /etc/rempart/api.auth --cacert ac.pem
+
+# Windows
+powershell -File scripts\rempart-token.ps1 -Url https://rempart.maison.lan:8080 `
+  -Name installation -Scopes admin -Days 1 -OutFile C:\rempart\api.auth
+
+# Ensuite, toute la configuration par l'API
+curl -sS -H @/etc/rempart/api.auth --cacert ac.pem -H 'Content-Type: application/json' \
+  --data '{"name":"home.arpa","algorithm":"ECDSAP256SHA256","dnssec":true,"records":["nas IN A 192.168.1.10"]}' \
+  https://rempart.maison.lan:8080/api/zones</code></pre>
+    <p>À la main, ce sont trois appels : <code>POST /api/login</code>, éventuellement <code>POST /api/login/otp</code>, puis <code>POST /api/tokens</code> avec <code>{"name":…, "scopes":[…], "days":…}</code>. Voir le <a href="api.html#demarrage">démarrage rapide de la console</a>.</p>
+    <div class="callout good"><div><b class="t">Bonnes pratiques</b>Donnez au jeton d'installation une durée courte (1 jour) et révoquez-le à la fin ; créez ensuite des jetons dédiés et étroits pour l'exploitation (<code>metrics</code>, <code>backup</code>). Gardez-les dans des fichiers en 0600 et passez-les par <code>curl -H @fichier</code>. Comptes OIDC : la connexion passe par le navigateur ; pour un script, utilisez le compte local ou un compte LDAP.</div></div>
+
+    <h3 id="cli">Ligne de commande</h3>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Commande</th><th>Rôle</th></tr></thead>
+      <tbody>
+        <tr><td><code>rempart -config rempart.yaml</code></td><td>Démarre le serveur.</td></tr>
+        <tr><td><code>rempart version</code></td><td>Affiche la version.</td></tr>
+        <tr><td><code>rempart healthcheck</code></td><td>Contrôle de santé du conteneur.</td></tr>
+        <tr><td><code>rempart setup-secrets</code></td><td>Crée les secrets dans le volume <code>/run/secrets</code>, au terminal (lancé par l'installeur). <code>-hsm-pin</code> ajoute le PIN d'un HSM réel.</td></tr>
+        <tr><td><code>rempart hash-password &lt; fichier</code></td><td>Empreinte Argon2id d'un mot de passe (lu sur l'entrée standard).</td></tr>
+        <tr><td><code>rempart unseal</code></td><td>Un dépositaire présente sa phrase (démarrage sous quorum).</td></tr>
+        <tr><td><code>rempart approve</code></td><td>Un dépositaire approuve l'opération affichée.</td></tr>
+        <tr><td><code>rempart passwd</code></td><td>Un dépositaire fixe sa propre phrase.</td></tr>
+        <tr><td><code>rempart backup verify &lt;archive&gt;</code></td><td>Vérifie une sauvegarde sans toucher au serveur.</td></tr>
+        <tr><td><code>rempart restore [-force] &lt;archive&gt;</code></td><td>Restaure une sauvegarde, Rempart arrêté.</td></tr>
+      </tbody>
+    </table></div>
+    <h3 id="env">Variables d'environnement</h3>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Variable</th><th>Rôle</th></tr></thead>
+      <tbody>
+        <tr><td><code>REMPART_CONFIG</code></td><td>Chemin du fichier de configuration (défaut <code>rempart.yaml</code>).</td></tr>
+        <tr><td><code>REMPART_ADMIN_PASSWORD_FILE</code></td><td>Mot de passe administrateur initial (obligatoire au premier démarrage).</td></tr>
+        <tr><td><code>REMPART_KEYSTORE_PASSPHRASE_FILE</code></td><td>Phrase de passe du keystore logiciel.</td></tr>
+        <tr><td><code>REMPART_PKCS11_PIN_FILE</code></td><td>PIN utilisateur du HSM.</td></tr>
+        <tr><td><code>REMPART_RESET_OTP=1</code></td><td>Retire le TOTP et les clés d'accès au démarrage (secours).</td></tr>
+      </tbody>
+    </table></div>
+    <p>Chaque variable <code>_FILE</code> a une variante directe (<code>REMPART_ADMIN_PASSWORD</code>…), à éviter : une variable d'environnement se lit plus facilement qu'un fichier secret.</p>
+
+    <!-- ================================================================= -->
+    <h2 id="depannage">Dépannage</h2>
+    <h3>Un site ne fonctionne plus</h3>
+    <ol class="steps">
+      <li>Journal : cherchez le domaine, notez la liste ou la règle qui le bloque (activez le journal complet le temps de l'enquête si besoin).</li>
+      <li>Filtrage → Tester un domaine, ou le test d'un appareil dans Appareils → Groupes.</li>
+      <li>Ajoutez une exception dans Ma liste (ou dans le groupe). Effet immédiat ; videz le cache de l'appareil (<code>ipconfig /flushdns</code> sous Windows).</li>
+    </ol>
+    <h3>Un appareil n'est pas filtré</h3>
+    <ul>
+      <li>Il n'utilise pas Rempart : vérifiez son serveur DNS (<code>nslookup exemple.fr</code> doit citer l'adresse de Rempart).</li>
+      <li>Il utilise un DNS chiffré à lui (navigateur, VPN, relais privé) : activez la catégorie « Contournement » et bloquez le DNS sortant au pare-feu.</li>
+      <li>Il a changé d'adresse MAC : voir <a href="#inventaire">adresse Wi-Fi privée</a>.</li>
+    </ul>
+    <h3>« Accès refusé » ou 403 dans l'interface ou l'API</h3>
+    <ul>
+      <li>Votre adresse n'est pas dans <code>web.allowed_admins</code>.</li>
+      <li>Votre rôle (opérateur, lecture seule) ou la portée du jeton ne suffit pas : le message indique la portée attendue.</li>
+      <li>« action réservée à l'interface d'administration » : la commande refuse les jetons, utilisez une session.</li>
+      <li>« en-tête X-Rempart manquant » : requête avec cookie sans l'en-tête <code>X-Rempart: 1</code>.</li>
+      <li>409 « instance réplique » : modifiez la configuration sur l'instance principale.</li>
+    </ul>
+    <h3>Trop d'échecs de connexion</h3>
+    <p>Après 5 échecs depuis une adresse, la connexion est bloquée pour une durée qui double à chaque nouvel échec. Attendez le délai affiché.</p>
+    <h3>Le téléphone refuse DoH ou DoT</h3>
+    <p>Le certificat est auto-signé : obtenez-en un par ACME ou votre PKI. Pour Android, le certificat doit couvrir <code>*.dns.example</code>.</p>
+    <h3>Rempart ne répond plus après un redémarrage</h3>
+    <p>En démarrage sous quorum, il attend M dépositaires : <code>podman exec -it rempart rempart unseal</code>. Avec un HSM, vérifiez le PIN (<code>REMPART_PKCS11_PIN_FILE</code>) et la bibliothèque PKCS#11. Les journaux du conteneur (<code>podman logs rempart</code>) donnent la cause.</p>
+
+    <!-- ================================================================= -->
+    <h2 id="glossaire">Glossaire</h2>
+    <div class="table-wrap"><table><tbody>
+      <tr><td><b>DNS</b></td><td>L'annuaire d'Internet : traduit un nom (exemple.fr) en adresse.</td></tr>
+      <tr><td><b>Résolveur</b></td><td>Le serveur qui fait ces traductions pour vos appareils : ici, Rempart.</td></tr>
+      <tr><td><b>DoH, DoT, DoQ, DNSCrypt</b></td><td>DNS chiffré, respectivement dans HTTPS, TLS, QUIC, ou par le protocole DNSCrypt.</td></tr>
+      <tr><td><b>DNSSEC</b></td><td>Signature des réponses DNS : on peut prouver qu'elles n'ont pas été falsifiées.</td></tr>
+      <tr><td><b>KSK, ZSK, DS</b></td><td>Clé qui signe les clés, clé qui signe la zone, empreinte de la KSK publiée chez le parent.</td></tr>
+      <tr><td><b>Zone</b></td><td>Un domaine et tous ses noms, servis par un même serveur.</td></tr>
+      <tr><td><b>AXFR, IXFR, NOTIFY</b></td><td>Copie complète, copie des différences, et avis de changement d'une zone vers un secondaire.</td></tr>
+      <tr><td><b>TSIG</b></td><td>Signature par secret partagé des échanges entre serveurs DNS.</td></tr>
+      <tr><td><b>RPZ</b></td><td>Liste de menaces au format zone DNS, publiée par un éditeur.</td></tr>
+      <tr><td><b>HSM, PKCS#11</b></td><td>Boîtier qui garde les clés sans jamais les livrer ; interface standard pour lui parler.</td></tr>
+      <tr><td><b>KEK</b></td><td>Clé qui chiffre les autres clés (état, journal, audit).</td></tr>
+      <tr><td><b>Quorum M sur N</b></td><td>M personnes parmi N doivent être d'accord pour ouvrir le keystore ou faire une opération sensible.</td></tr>
+      <tr><td><b>Jeton d'API</b></td><td>Secret qui donne à un script des droits limités (portées), sans mot de passe.</td></tr>
+      <tr><td><b>SafeSearch</b></td><td>Mode filtré des moteurs de recherche, imposé par le DNS.</td></tr>
+    </tbody></table></div>
+    <p class="no-results hidden" id="none">Aucune section ne correspond à cette recherche.</p>
+  </main>
+</div>
+</body>
+</html>

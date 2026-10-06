@@ -1,0 +1,50 @@
+# docker-compose.yml - Rempart avec le keystore logiciel (clés chiffrées par une phrase de passe), Docker ou Podman.
+# Installation : scripts/install.sh (Linux, macOS) ou scripts/install.ps1 (Windows), qui crée le volume de secrets.
+# Ports standard : DNS 53, DoT/DoQ 853, DoH 443, HTTP 80 (ACME) ; interface sur 127.0.0.1:8080. Aucun secret dans ce fichier.
+name: rempart
+services:
+  rempart:
+    build: { context: ., target: prod }
+    image: rempart:latest
+    container_name: rempart
+    restart: unless-stopped
+    ports:
+      - "53:53/udp"
+      - "53:53/tcp"
+      - "853:853/tcp"      # DNS-over-TLS
+      - "853:853/udp"      # DNS-over-QUIC
+      - "443:443/tcp"      # DNS-over-HTTPS
+      - "80:80/tcp"        # HTTP : défi ACME http-01 (tls.acme_http_listen)
+      - "127.0.0.1:8080:8080"  # interface : locale par défaut (VPN ou proxy inverse pour l'ouvrir)
+    # HSM choisi depuis l'interface (Sécurité → Clés et HSM) : montez la
+    # bibliothèque du constructeur en lecture seule, ajoutez le PIN au volume de
+    # secrets (« rempart setup-secrets -hsm-pin », voir le README) et déclarez :
+    #   volumes: ["/usr/safenet/lunaclient:/usr/safenet/lunaclient:ro"]
+    #   environment: { REMPART_PKCS11_PIN_FILE: /run/secrets/hsm_pin }
+    # (l'image prod est distroless : la bibliothèque doit être compatible glibc)
+    environment:
+      REMPART_KEYSTORE_PASSPHRASE_FILE: /run/secrets/keystore_passphrase
+      # Lu au premier démarrage seulement ; l'installeur efface ensuite le fichier.
+      REMPART_ADMIN_PASSWORD_FILE: /run/secrets/admin_password
+    volumes:
+      - rempart-data:/var/lib/rempart
+      - rempart-secrets:/run/secrets:ro
+    # Durcissement : racine en lecture seule, aucune capacité, pas d'élévation de privilèges.
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: "0"   # écoute sur :53 sans root ni capacité
+    tmpfs: ["/tmp:size=16m,mode=1777"]
+    ulimits:
+      core: 0
+    deploy:
+      resources:
+        limits: { memory: 512M }
+
+volumes:
+  rempart-data:
+  # Créé et rempli par l'installeur (rempart setup-secrets), jamais par compose.
+  rempart-secrets:
+    external: true
+    name: rempart-secrets

@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Console API Rempart</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="docs.css">
+<script type="module" src="api-explorer.js"></script>
+</head>
+<body>
+<header class="top">
+  <button class="btn menu-btn" type="button" id="menu" aria-controls="side" aria-expanded="false">Menu</button>
+  <a class="brand" href="/"><img src="favicon.svg" alt="">Rempart <small>Console API</small></a>
+  <nav aria-label="Pages">
+    <a href="/">Interface</a>
+    <a href="aide.html">Aide</a>
+    <a href="api.html" aria-current="page">API</a>
+    <a class="opt" href="openapi.json" download>openapi.json</a>
+    <button type="button" id="theme">Thème</button>
+  </nav>
+</header>
+<div class="layout">
+  <aside class="side" id="side" aria-label="Commandes">
+    <label class="visually-hidden" for="filter">Filtrer les commandes</label>
+    <input class="search" id="filter" type="search" placeholder="Filtrer : zones, POST, tokens…" autocomplete="off">
+    <div id="toc"></div>
+  </aside>
+  <main class="content" id="main">
+    <h1>Console API</h1>
+    <p class="lead">Toutes les commandes de l'API REST de Rempart, exécutables depuis cette page. Choisissez une commande, ajustez les paramètres, cliquez sur <b>Exécuter</b> : la réponse réelle du serveur s'affiche, avec la commande <code>curl</code> équivalente à copier dans vos scripts.</p>
+
+    <section class="auth" aria-labelledby="auth-t">
+      <h2 id="auth-t">Authentification des requêtes</h2>
+      <div class="row">
+        <div class="seg" role="group" aria-label="Mode d'authentification">
+          <button type="button" id="mode-session" aria-pressed="true">Ma session</button>
+          <button type="button" id="mode-token" aria-pressed="false">Jeton d'API</button>
+        </div>
+        <span class="who" id="who"><i></i><span>Vérification…</span></span>
+      </div>
+      <div class="row hidden" id="token-row">
+        <label class="visually-hidden" for="token">Jeton porteur</label>
+        <input type="password" id="token" placeholder="rmp_…" autocomplete="off" spellcheck="false">
+        <button class="btn" type="button" id="token-check">Vérifier</button>
+      </div>
+      <p class="small muted" id="auth-help">Les requêtes partent avec le cookie de votre session ouverte dans l'interface. Toutes les commandes sont alors possibles, selon votre rôle. <a href="/">Se connecter</a> si besoin.</p>
+    </section>
+
+    <div class="callout warn"><div><b class="t">Ce sont de vraies commandes.</b>Elles agissent sur ce serveur et sont inscrites dans le journal d'audit signé. Les suppressions demandent un second clic de confirmation.</div></div>
+
+    <h2 id="demarrage">Démarrage rapide</h2>
+    <ol class="steps">
+      <li><b>Obtenir un jeton.</b> Dans l'interface : Sécurité → Accès API. Par script, avec un compte administrateur : <code>POST /api/login</code>, puis <code>POST /api/tokens</code> (exemple ci-dessous, ou <code>scripts/rempart-token.sh</code>).</li>
+      <li><b>L'enregistrer dans un fichier en 0600</b>, sous la forme d'un en-tête : <code>Authorization: Bearer rmp_…</code>. Il n'apparaît alors ni dans l'historique du shell ni dans <code>ps</code>.</li>
+      <li><b>L'utiliser</b> avec <code>curl -H @fichier</code>. Une requête qui modifie quelque chose avec un jeton n'a pas besoin de l'en-tête <code>X-Rempart</code>.</li>
+    </ol>
+<pre><code># 1. Session d'un compte administrateur (local ou LDAP), cookie gardé dans un fichier
+curl -sS -c /tmp/rempart.cookies -H 'Content-Type: application/json' \
+  --data @/root/rempart-login.json https://rempart.maison.lan:8080/api/login
+#    {"username":"admin","password":"…"}  dans rempart-login.json (0600)
+#    Si la réponse contient "second_factor": true, envoyez le code :
+#    curl -b /tmp/rempart.cookies -c /tmp/rempart.cookies -H 'X-Rempart: 1' \
+#      -H 'Content-Type: application/json' --data '{"challenge":"…","code":"123456"}' …/api/login/otp
+
+# 2. Création du jeton (portée admin, 30 jours)
+curl -sS -b /tmp/rempart.cookies -H 'X-Rempart: 1' -H 'Content-Type: application/json' \
+  --data '{"name":"installation","scopes":["admin"],"days":30}' \
+  https://rempart.maison.lan:8080/api/tokens
+
+# 3. Utilisation
+printf 'Authorization: Bearer %s\n' 'rmp_…' &gt; /etc/rempart/api.auth &amp;&amp; chmod 600 /etc/rempart/api.auth
+curl -sS -H @/etc/rempart/api.auth https://rempart.maison.lan:8080/api/status</code></pre>
+
+    <h3>Portées et rôles</h3>
+    <div class="table-wrap"><table id="scopes"><thead><tr><th>Portée</th><th>Qui peut l'utiliser</th></tr></thead><tbody></tbody></table></div>
+
+    <h3>Codes de réponse</h3>
+    <div class="table-wrap"><table><tbody>
+      <tr><td><code>200</code></td><td>Succès. Le corps est du JSON, sauf mention contraire (texte, archive).</td></tr>
+      <tr><td><code>400</code></td><td>Requête invalide : JSON mal formé, <b>champ inconnu</b> (refusé), valeur hors bornes. Le motif est dans <code>{"error": "…"}</code>.</td></tr>
+      <tr><td><code>401</code></td><td>Non authentifié, session expirée, jeton inconnu, expiré ou révoqué.</td></tr>
+      <tr><td><code>403</code></td><td>Portée ou rôle insuffisant, commande réservée à l'interface, en-tête <code>X-Rempart</code> manquant, adresse hors de <code>web.allowed_admins</code>.</td></tr>
+      <tr><td><code>409</code></td><td>Conflit : instance réplique (configuration en lecture seule), port déjà pris, opération déjà en cours.</td></tr>
+      <tr><td><code>429</code></td><td>Trop d'échecs de connexion depuis cette adresse : attendre le délai indiqué.</td></tr>
+    </tbody></table></div>
+
+    <div id="ops"></div>
+    <p class="no-results hidden" id="none">Aucune commande ne correspond à ce filtre.</p>
+  </main>
+</div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

@@ -1,0 +1,54 @@
+# rempart.container - unité Quadlet (systemd) pour lancer Rempart avec Podman sur un serveur Linux.
+# Copier dans ~/.config/containers/systemd/ (sans root) ou /etc/containers/systemd/ (root),
+# ou laisser faire scripts/install.sh --quadlet, qui crée aussi le volume de secrets (rempart setup-secrets).
+# Puis : systemctl [--user] daemon-reload && systemctl [--user] start rempart
+
+[Unit]
+Description=Rempart DNS (résolveur filtrant)
+Wants=network-online.target
+After=network-online.target
+
+[Container]
+Image=localhost/rempart:latest
+ContainerName=rempart
+# Sans root, ouvrir le port 53 exige sur l'hôte : sysctl net.ipv4.ip_unprivileged_port_start=53
+PublishPort=53:53/udp
+PublishPort=53:53/tcp
+PublishPort=853:853/tcp
+PublishPort=853:853/udp
+# DNS-over-HTTPS (RFC 8484) : https://<serveur>/dns-query
+PublishPort=443:443/tcp
+# HTTP : défi ACME http-01 (tls.acme_http_listen, ouvert le temps du défi)
+PublishPort=80:80/tcp
+PublishPort=127.0.0.1:8080:8080/tcp
+# Serveur DHCP (Appareils → DHCP) : il faut le réseau de l'hôte pour les
+# diffusions du port 67. Remplacez les PublishPort= par Network=host, retirez
+# Sysctl= ci-dessous et réglez sur l'hôte net.ipv4.ip_unprivileged_port_start=53.
+# Network=host
+Volume=rempart-data:/var/lib/rempart:Z
+# Volume de secrets (fichiers 0400 de l'utilisateur 65532, créés par rempart setup-secrets),
+# monté en lecture seule. En mode quorum au démarrage, la phrase du keystore ne sert plus :
+# retirez la variable et effacez le fichier du volume.
+Volume=rempart-secrets:/run/secrets:ro,Z
+Environment=REMPART_KEYSTORE_PASSPHRASE_FILE=/run/secrets/keystore_passphrase
+# Lu au premier démarrage seulement ; l'installeur efface ensuite le fichier.
+Environment=REMPART_ADMIN_PASSWORD_FILE=/run/secrets/admin_password
+# Durcissement : système de fichiers en lecture seule, aucune capacité.
+ReadOnly=true
+DropCapability=ALL
+NoNewPrivileges=true
+Sysctl=net.ipv4.ip_unprivileged_port_start=0
+Tmpfs=/tmp:size=16m,mode=1777
+Ulimit=core=0
+PodmanArgs=--memory=512m
+HealthCmd=/usr/local/bin/rempart healthcheck 127.0.0.1:53
+HealthInterval=30s
+# Pas de HealthOnFailure=kill : en mode quorum, Rempart attend les dépositaires
+# sans servir le DNS ; le tuer effacerait les parts déjà présentées.
+
+[Service]
+Restart=always
+TimeoutStartSec=300
+
+[Install]
+WantedBy=default.target

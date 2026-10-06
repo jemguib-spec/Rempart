@@ -1,0 +1,46 @@
+# docker-compose.hsm.yml - Rempart avec un HSM PKCS#11 ; démonstration avec SoftHSM2 (HSM logiciel).
+# Installation : scripts/install.sh --softhsm (ou install.ps1 -SoftHSM), qui génère les PIN dans le volume de secrets.
+# HSM réel (Thales Luna, nShield, YubiHSM 2, Nitrokey) : cible « prod », bibliothèque du constructeur montée, voir rempart.hsm.yaml.
+#
+# Exemple pour un HSM réel :
+#   volumes:
+#     - /usr/safenet/lunaclient:/usr/safenet/lunaclient:ro
+#     - /etc/Chrystoki.conf:/etc/Chrystoki.conf:ro
+name: rempart-hsm
+services:
+  rempart:
+    build: { context: ., target: softhsm }
+    image: rempart:softhsm
+    container_name: rempart-hsm
+    restart: unless-stopped
+    ports:
+      - "53:53/udp"
+      - "53:53/tcp"
+      - "853:853/tcp"
+      - "853:853/udp"
+      - "443:443/tcp"
+      - "80:80/tcp"
+      - "127.0.0.1:8080:8080"
+    environment:
+      REMPART_PKCS11_PIN_FILE: /run/secrets/hsm_pin
+      REMPART_PKCS11_SO_PIN_FILE: /run/secrets/hsm_so_pin
+      REMPART_ADMIN_PASSWORD_FILE: /run/secrets/admin_password
+    volumes:
+      - rempart-data:/var/lib/rempart
+      - softhsm-tokens:/var/lib/softhsm/tokens
+      - rempart-hsm-secrets:/run/secrets:ro
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: "0"
+    tmpfs: ["/tmp:size=16m,mode=1777"]
+    ulimits:
+      core: 0
+
+volumes:
+  rempart-data:
+  softhsm-tokens:
+  rempart-hsm-secrets:
+    external: true
+    name: rempart-hsm-secrets

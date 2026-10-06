@@ -1,0 +1,29 @@
+# Configuration used by the Docker image. Mount your own over
+# /etc/rempart/rempart.yaml to change it.
+data_dir: /var/lib/rempart
+
+dns:
+  listen: ["0.0.0.0:53"]
+  # Only these networks may use the resolver (prevents open-resolver abuse).
+  allowed_clients: ["127.0.0.0/8", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "fc00::/7"]
+
+dot: { listen: ":853" }
+doq: { listen: ":853" }
+doh: { listen: ":443", path: /dns-query }
+
+tls:
+  key_label: rempart-tls            # TLS private key generated in the keystore (HSM when enabled)
+  self_signed_names: ["rempart.lan", "localhost"]
+  # cert_file: /etc/rempart/tls/fullchain.pem   # certificate issued for the keystore key
+
+web:
+  listen: ":8080"
+  tls: true                         # HTTPS admin interface (secure cookies, HSTS)
+
+keystore:
+  backend: pkcs11
+  pkcs11:
+    module: /usr/lib/softhsm/libsofthsm2.so   # Thales Luna: /usr/safenet/lunaclient/lib/libCryptoki2_64.so
+    token_label: rempart
+    pin_file: /run/secrets/hsm_pin
+    kek_label: rempart-kek

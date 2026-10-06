@@ -1,0 +1,90 @@
+# Rempart — configuration complète commentée.
+# Les secrets ne vont JAMAIS dans ce fichier : utilisez les variables
+# d'environnement (ou leur variante _FILE pointant vers un fichier) :
+#   REMPART_KEYSTORE_PASSPHRASE  phrase de passe du keystore logiciel
+#   REMPART_PKCS11_PIN           PIN utilisateur du HSM
+#   REMPART_ADMIN_PASSWORD       mot de passe admin initial (sinon généré et affiché une fois)
+
+data_dir: ./data
+log_level: info                 # debug | info | warn | error
+
+dns:
+  listen: ["0.0.0.0:53", "[::]:53"]
+  # Réseaux autorisés à interroger le résolveur (refus silencieux sinon).
+  allowed_clients: ["127.0.0.0/8", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "fc00::/7", "fe80::/10"]
+  rate_limit: { qps: 200, burst: 400 }   # par client
+  cache: { size: 200000, min_ttl: 0s, max_ttl: 24h }
+  # Suffixes autorisés à répondre avec des IP privées (protection anti-rebinding).
+  rebind_allowed_domains: [lan, local, home.arpa, internal, localdomain]
+
+dot: { listen: ":853" }         # DNS-over-TLS ; vide pour désactiver
+doq: { listen: ":853" }         # DNS-over-QUIC (RFC 9250), en UDP ; vide pour désactiver
+# DNSCrypt v2 (UDP et TCP), activé depuis Réglages → Chiffrement. stamp_addr : adresse publique
+# annoncée aux clients dans le tampon sdns://.
+# dnscrypt: { listen: ":5443", provider_name: "2.dnscrypt-cert.rempart.maison", stamp_addr: "203.0.113.10:5443" }
+doh: { listen: ":443", path: /dns-query }   # DNS-over-HTTPS ; vide pour désactiver
+
+tls:
+  # Par défaut la clé privée TLS est générée dans le keystore (dans le HSM si
+  # backend: pkcs11) et un certificat auto-signé est créé. Pour un vrai
+  # certificat : générez une CSR pour cette clé et indiquez cert_file.
+  key_label: rempart-tls
+  self_signed_names: [rempart.lan, localhost]
+  # Le certificat se gère de préférence depuis l'interface (Sécurité →
+  # Certificat) : ACME (Let's Encrypt, EJBCA, EverTrust Horizon…) ou CSR à
+  # faire signer par votre PKI. Écoute ouverte le temps d'un défi http-01 :
+  acme_http_listen: ":80"
+  # Imposer une chaîne (l'interface ne pourra plus la changer) :
+  # cert_file: /etc/rempart/fullchain.pem
+  # Ou une clé classique sur disque (pas de HSM pour TLS) :
+  # cert_file: /etc/rempart/fullchain.pem
+  # key_file: /etc/rempart/privkey.pem
+
+# Résolveurs en amont au PREMIER démarrage ; ensuite : interface, Réglages →
+# Résolution DNS (profil perso/entreprise, transfert conditionnel).
+# https:// (DoH), tls:// (DoT), udp:// ou tcp://.
+# "#IP" épingle l'adresse (DoH) ou fixe le nom TLS attendu (DoT).
+upstreams:
+  - https://dns.quad9.net/dns-query
+  - tls://one.one.one.one
+  - https://dns.google/dns-query
+bootstrap: [9.9.9.9, 1.1.1.1]   # DNS en clair utilisé uniquement pour trouver l'IP des upstreams
+lists_refresh: 24h
+
+keystore:
+  backend: software             # software | pkcs11
+  software:
+    dir: ./data/keystore
+    # passphrase_file: /run/secrets/keystore_passphrase
+  pkcs11:
+    module: /usr/lib/softhsm/libsofthsm2.so
+    token_label: rempart
+    # pin_file: /run/secrets/hsm_pin
+    kek_label: rempart-kek      # clé AES-256 qui chiffre les clés de données
+    # Dossiers où l'assistant HSM de l'interface cherche les bibliothèques
+    # PKCS#11 (charger un module exécute son code : listez le strict utile).
+    # module_dirs: [/usr/safenet/lunaclient/lib, /opt/nfast/toolkits/pkcs11]
+
+web:
+  listen: ":8080"
+  tls: true
+  session_ttl: 8h
+  # allowed_admins: [192.168.1.0/24]   # restreint l'accès à l'interface
+
+# Valeurs appliquées au PREMIER démarrage uniquement ; ensuite tout se gère
+# depuis l'interface web (l'état est chiffré dans data_dir/state.sealed).
+defaults:
+  blocking_mode: zero           # zero | nxdomain | refused
+  log_mode: stats               # none | stats | full
+  retention_days: 7
+  client_ids: pseudonymize      # pseudonymize | truncate | clear
+  # lists:                      # sinon : AdGuard DNS filter + StevenBlack + HaGeZi Pro (désactivée)
+  #   - { name: "Ma liste", url: "https://exemple.fr/liste.txt", sha256: "" }
+  zones:
+    - name: maison.lan
+      dnssec: true
+      algorithm: ECDSAP256SHA256   # ECDSAP256SHA256 | ECDSAP384SHA384 | ED25519
+      records:
+        - "@        IN A     192.168.1.1"
+        - "nas  300 IN A     192.168.1.10"
+        - "intranet IN CNAME nas"
