@@ -4,3 +4,4 @@
 /rempart.exe
 *.sealed
 /docker-compose.override.yml
+/.env

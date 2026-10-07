@@ -2,6 +2,14 @@
 
 ## 1.1.0 — 2026-10-06
 
+### Accès mobile et interface
+
+- **Zones locales : noms génériques** (`*`, RFC 4592). Réponse synthétisée au nom demandé, avec les signatures du joker et la preuve que le nom exact n'existe pas (NSEC, NSEC3), NODATA compris. Le validateur DNSSEC accepte désormais un NSEC dont le propriétaire est le joker lui-même : le label `*` n'est pas compté dans le champ Labels de sa signature (RFC 4034 §3.1.3), il le refusait à tort.
+- **DoT depuis Internet avec le jeton d'appareil** (Réglages → Chiffrement, désactivé par défaut). Le jeton lu dans le nom TLS (`<jeton>.<nom>`) ouvre l'accès comme le jeton DoH, pour le DNS privé natif d'Android en 4G. Un jeton inconnu reste refusé, et les zones internes ne sont jamais servies hors du réseau. Le nom circule en clair : le risque (réutilisation du jeton par qui observe le trafic) est affiché à côté de l'interrupteur.
+- **Interface sur le port DoH** (Réglages → Chiffrement, désactivé par défaut) : `https://<nom du serveur>/` sans port 8080 ni tunnel, pour les clients des réseaux autorisés seulement (404 depuis Internet). Les deux écoutes partagent le même gestionnaire, sessions comprises.
+- **Port et ouverture de l'interface à l'installation** : `--web-port 8443`, `--web-lan`, `--web-local` (`-WebPort`, `-WebLan`, `-WebLocal` sous Windows), gardés dans `.env`. Compose lit `REMPART_WEB_BIND` et `REMPART_WEB_PORT` ; l'unité Quadlet est adaptée à la copie.
+- Appareils : le bloc d'inventaire devient « Déclarer un appareil du réseau local (par adresse IP ou MAC) » et celui des profils « Créer un profil mobile » : les deux s'appelaient « Ajouter un appareil ».
+
 ### Installation et secrets
 
 - **Installeur unique, Docker ou Podman** : `scripts/install.sh` (Linux, macOS ; `--quadlet` pour l'unité systemd) et `scripts/install.ps1` (Windows). Il détecte le moteur et l'outil compose, vérifie les ports et la limite des ports sans root de Podman, construit l'image, crée les secrets, démarre Rempart puis efface le mot de passe initial. Le relancer met à jour sans toucher aux secrets. `--no-build` reprend une image déjà chargée, `--softhsm` installe la démonstration HSM.

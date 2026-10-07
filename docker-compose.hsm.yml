@@ -20,7 +20,7 @@ services:
       - "853:853/udp"
       - "443:443/tcp"
       - "80:80/tcp"
-      - "127.0.0.1:8080:8080"
+      - "${REMPART_WEB_BIND:-127.0.0.1}:${REMPART_WEB_PORT:-8080}:8080"
     environment:
       REMPART_PKCS11_PIN_FILE: /run/secrets/hsm_pin
       REMPART_PKCS11_SO_PIN_FILE: /run/secrets/hsm_so_pin

@@ -402,7 +402,11 @@ func run(cfgPath string) error {
 	if _, ok := ks.(*keystore.Software); ok {
 		go serveApprovals(ctx, cfg, a, log)
 	}
-	ws := &http.Server{Addr: cfg.Web.Listen, Handler: a.Handler(cfg.Web.SessionTTL.Duration),
+	// Un seul gestionnaire (sessions comprises) pour l'écoute de l'interface
+	// et, si l'administrateur le choisit, l'écoute DoH.
+	webHandler := a.Handler(cfg.Web.SessionTTL.Duration)
+	enc.SetWebHandler(webHandler)
+	ws := &http.Server{Addr: cfg.Web.Listen, Handler: webHandler,
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 3 * time.Minute,
 		IdleTimeout: 2 * time.Minute, MaxHeaderBytes: 32 << 10}
 	if cfg.Web.TLS {

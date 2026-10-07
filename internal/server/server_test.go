@@ -268,12 +268,25 @@ func TestGroups(t *testing.T) {
 	}
 	// Jeton lu dans le SNI (DoT) : identifie, mais n'ouvre pas l'accès.
 	m.SetQuestion("normal.example.", dns.TypeA)
-	if r = s.Handle(withSNIDevice(context.Background(), "jetonsecret"), m, netip.MustParseAddr("198.51.100.7"), "dot"); r.Rcode != dns.RcodeRefused {
+	if r = s.Handle(withSNIDevice(context.Background(), "jetonsecret", false), m, netip.MustParseAddr("198.51.100.7"), "dot"); r.Rcode != dns.RcodeRefused {
 		t.Fatal("le jeton SNI ne doit pas franchir l'ACL")
 	}
 	m.SetQuestion("www.tiktok.com.", dns.TypeA)
-	if r = s.Handle(withSNIDevice(context.Background(), "jetonsecret"), m, netip.MustParseAddr("127.0.0.9"), "dot"); !r.Answer[0].(*dns.A).A.Equal(net.IPv4zero) {
+	if r = s.Handle(withSNIDevice(context.Background(), "jetonsecret", false), m, netip.MustParseAddr("127.0.0.9"), "dot"); !r.Answer[0].(*dns.A).A.Equal(net.IPv4zero) {
 		t.Fatal("le jeton SNI identifie l'appareil dans le réseau")
+	}
+	// Option « jeton DoT depuis Internet » : le jeton SNI ouvre l'accès, avec
+	// la politique du groupe, sans zone interne ; un jeton inconnu reste refusé.
+	if r = s.Handle(withSNIDevice(context.Background(), "jetonsecret", true), m, netip.MustParseAddr("198.51.100.7"), "dot"); r.Rcode != dns.RcodeSuccess || !r.Answer[0].(*dns.A).A.Equal(net.IPv4zero) {
+		t.Fatalf("jeton SNI admis : réponse filtrée attendue : %v", r)
+	}
+	m.SetQuestion("normal.example.", dns.TypeA)
+	if r = s.Handle(withSNIDevice(context.Background(), "inconnu", true), m, netip.MustParseAddr("198.51.100.7"), "dot"); r.Rcode != dns.RcodeRefused {
+		t.Fatal("jeton SNI inconnu hors ACL : refus attendu")
+	}
+	m.SetQuestion("nas.maison.lan.", dns.TypeA)
+	if r = s.Handle(withSNIDevice(context.Background(), "jetonsecret", true), m, netip.MustParseAddr("198.51.100.7"), "dot"); r.Rcode != dns.RcodeRefused {
+		t.Fatalf("zone interne servie hors réseau par jeton SNI : %v", r)
 	}
 }
 

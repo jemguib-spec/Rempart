@@ -1545,7 +1545,7 @@
           "Réglages"
         ],
         "summary": "Activer ou couper DoT, DoH, DoQ, DNSCrypt",
-        "description": "Effet immédiat. Les adresses viennent du fichier de configuration (dot.listen, doh.listen, doq.listen, dnscrypt.listen). Un port déjà pris rend 409.\n\nPortée : admin — Modification de la configuration. Jeton « admin », rôle opérateur ou administrateur.",
+        "description": "Effet immédiat. Les adresses viennent du fichier de configuration (dot.listen, doh.listen, doq.listen, dnscrypt.listen). Un port déjà pris rend 409. dot_token_admit : le jeton d'appareil lu dans le nom TLS de DoT ouvre l'accès depuis Internet. web_on_doh : interface aussi servie sur l'écoute DoH, aux réseaux autorisés seulement. Ces deux options absentes du corps restent inchangées.\n\nPortée : admin — Modification de la configuration. Jeton « admin », rôle opérateur ou administrateur.",
         "operationId": "put_api_encryption",
         "x-rempart-scope": "admin",
         "parameters": [],
@@ -1596,6 +1596,12 @@
                   },
                   "dnscrypt_enabled": {
                     "type": "boolean"
+                  },
+                  "dot_token_admit": {
+                    "type": "boolean"
+                  },
+                  "web_on_doh": {
+                    "type": "boolean"
                   }
                 }
               },
@@ -1603,7 +1609,9 @@
                 "dot_enabled": true,
                 "doh_enabled": true,
                 "doq_enabled": true,
-                "dnscrypt_enabled": false
+                "dnscrypt_enabled": false,
+                "dot_token_admit": false,
+                "web_on_doh": false
               }
             }
           }

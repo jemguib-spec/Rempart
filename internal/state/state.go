@@ -218,6 +218,12 @@ type Encryption struct {
 	DoQDisabled bool `json:"doq_disabled"`
 	// DNSCrypt : désactivé tant que l'administrateur ne l'allume pas.
 	DNSCryptEnabled bool `json:"dnscrypt_enabled"`
+	// DoTTokenAdmit : le jeton d'appareil lu dans le nom TLS de DoT ouvre
+	// l'accès depuis Internet (désactivé par défaut : ce nom circule en clair).
+	DoTTokenAdmit bool `json:"dot_token_admit,omitempty"`
+	// WebOnDoH : l'interface est aussi servie sur l'écoute DoH (443), pour
+	// les clients des réseaux autorisés seulement.
+	WebOnDoH bool `json:"web_on_doh,omitempty"`
 }
 
 type Settings struct {

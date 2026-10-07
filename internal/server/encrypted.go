@@ -10,8 +10,10 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/miekg/dns"
@@ -37,6 +39,10 @@ type EncryptionStatus struct {
 	// DNSCrypt : tampon sdns:// et nom de fournisseur.
 	DNSCrypt ListenerStatus `json:"dnscrypt"`
 	Provider string         `json:"dnscrypt_provider,omitempty"`
+	// DoTTokenAdmit : jeton d'appareil DoT accepté depuis Internet.
+	DoTTokenAdmit bool `json:"dot_token_admit"`
+	// WebOnDoH : interface aussi servie sur l'écoute DoH (réseaux autorisés).
+	WebOnDoH bool `json:"web_on_doh"`
 }
 
 // Encrypted pilote les écoutes DoT et DoH d'un Server.
@@ -62,6 +68,31 @@ type Encrypted struct {
 	dotErr  error
 	dohErr  error
 	doqErr  error
+
+	// web : gestionnaire de l'interface, servi sous « / » de l'écoute DoH
+	// quand webOnDoH est actif (choisi à chaud, sans redémarrer l'écoute).
+	web      atomic.Pointer[http.Handler]
+	webOnDoH atomic.Bool
+}
+
+// SetWebHandler déclare l'interface d'administration, à servir aussi sur
+// l'écoute DoH si l'administrateur le choisit.
+func (e *Encrypted) SetWebHandler(h http.Handler) { e.web.Store(&h) }
+
+// webGate sert l'interface sous l'écoute DoH aux seuls clients des réseaux
+// autorisés : depuis Internet (port 443 redirigé pour DoH), elle n'existe pas.
+func (e *Encrypted) webGate(w http.ResponseWriter, r *http.Request) {
+	h := e.web.Load()
+	if !e.webOnDoH.Load() || h == nil {
+		http.NotFound(w, r)
+		return
+	}
+	ap, err := netip.ParseAddrPort(r.RemoteAddr)
+	if err != nil || !e.srv.allowed(ap.Addr()) {
+		http.NotFound(w, r)
+		return
+	}
+	(*h).ServeHTTP(w, r)
 }
 
 // NewEncrypted ne démarre rien : appeler Apply.
@@ -102,6 +133,8 @@ func (e *Encrypted) Apply(enc state.Encryption) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.enc = enc
+	e.srv.SetDoTTokenAdmit(enc.DoTTokenAdmit)
+	e.webOnDoH.Store(enc.WebOnDoH)
 	e.dotErr = e.applyDoT(e.dotAddr != "" && !enc.DoTDisabled)
 	e.dohErr = e.applyDoH(e.dohAddr != "" && !enc.DoHDisabled)
 	e.doqErr = e.applyDoQ(e.doqAddr != "" && !enc.DoQDisabled)
@@ -158,8 +191,11 @@ func (e *Encrypted) applyDoH(want bool) error {
 		h := e.srv.DoHHandler(e.dohPath)
 		mux.Handle(e.dohPath, h)
 		mux.Handle(strings.TrimSuffix(e.dohPath, "/")+"/", h) // <chemin>/<jeton d'appareil>
+		mux.HandleFunc("/", e.webGate)
+		// Délais de l'interface (sauvegardes longues) : ils couvrent aussi DoH.
 		hs := &http.Server{Handler: mux, TLSConfig: e.tlsConf,
-			ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 2 * time.Minute, MaxHeaderBytes: 16 << 10}
+			ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 3 * time.Minute,
+			IdleTimeout: 2 * time.Minute, MaxHeaderBytes: 32 << 10}
 		go func() {
 			if err := hs.ServeTLS(ln, "", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				e.srv.Logger.Error("DNS-over-HTTPS arrêté", "addr", e.dohAddr, "err", err)
@@ -186,9 +222,11 @@ func (e *Encrypted) Status() EncryptionStatus {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	st := EncryptionStatus{
-		DoT: ListenerStatus{Listen: e.dotAddr, Enabled: e.dotAddr != "" && !e.enc.DoTDisabled, Running: e.dot != nil},
-		DoH: ListenerStatus{Listen: e.dohAddr, Path: e.dohPath, Enabled: e.dohAddr != "" && !e.enc.DoHDisabled, Running: e.doh != nil},
-		DoQ: ListenerStatus{Listen: e.doqAddr, Enabled: e.doqAddr != "" && !e.enc.DoQDisabled, Running: e.doq != nil},
+		DoT:           ListenerStatus{Listen: e.dotAddr, Enabled: e.dotAddr != "" && !e.enc.DoTDisabled, Running: e.dot != nil},
+		DoH:           ListenerStatus{Listen: e.dohAddr, Path: e.dohPath, Enabled: e.dohAddr != "" && !e.enc.DoHDisabled, Running: e.doh != nil},
+		DoQ:           ListenerStatus{Listen: e.doqAddr, Enabled: e.doqAddr != "" && !e.enc.DoQDisabled, Running: e.doq != nil},
+		DoTTokenAdmit: e.enc.DoTTokenAdmit,
+		WebOnDoH:      e.enc.WebOnDoH,
 	}
 	if e.doqErr != nil {
 		st.DoQ.Error = e.doqErr.Error()

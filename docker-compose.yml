@@ -1,6 +1,6 @@
 # docker-compose.yml - Rempart avec le keystore logiciel (clés chiffrées par une phrase de passe), Docker ou Podman.
 # Installation : scripts/install.sh (Linux, macOS) ou scripts/install.ps1 (Windows), qui crée le volume de secrets.
-# Ports standard : DNS 53, DoT/DoQ 853, DoH 443, HTTP 80 (ACME) ; interface sur 127.0.0.1:8080. Aucun secret dans ce fichier.
+# Ports standard : DNS 53, DoT/DoQ 853, DoH 443, HTTP 80 (ACME) ; interface 127.0.0.1:8080 par défaut (.env : REMPART_WEB_BIND, REMPART_WEB_PORT). Aucun secret.
 name: rempart
 services:
   rempart:
@@ -15,7 +15,7 @@ services:
       - "853:853/udp"      # DNS-over-QUIC
       - "443:443/tcp"      # DNS-over-HTTPS
       - "80:80/tcp"        # HTTP : défi ACME http-01 (tls.acme_http_listen)
-      - "127.0.0.1:8080:8080"  # interface : locale par défaut (VPN ou proxy inverse pour l'ouvrir)
+      - "${REMPART_WEB_BIND:-127.0.0.1}:${REMPART_WEB_PORT:-8080}:8080"  # interface : locale par défaut ; install.sh --web-lan --web-port 8443
     # HSM choisi depuis l'interface (Sécurité → Clés et HSM) : montez la
     # bibliothèque du constructeur en lecture seule, ajoutez le PIN au volume de
     # secrets (« rempart setup-secrets -hsm-pin », voir le README) et déclarez :

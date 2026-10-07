@@ -1,5 +1,5 @@
-// encryption.go - API de l'interrupteur DNS-over-TLS / DNS-over-HTTPS (Réglages → Chiffrement).
-// GET rend l'état des deux écoutes ; PUT les allume ou les éteint à chaud, sans redémarrage.
+// encryption.go - API des écoutes chiffrées (Réglages → Chiffrement) : DoT, DoH, DoQ, DNSCrypt et leurs options.
+// GET rend l'état ; PUT allume ou éteint à chaud, sans redémarrage (jeton DoT depuis Internet, interface sur le port DoH).
 // Contexte : Rempart ; adresses et ports restent dans le fichier de configuration (dot.listen, doh.listen).
 package api
 
@@ -28,6 +28,9 @@ func (a *API) putEncryption(w http.ResponseWriter, r *http.Request, user string)
 		DoH      bool `json:"doh_enabled"`
 		DoQ      bool `json:"doq_enabled"`
 		DNSCrypt bool `json:"dnscrypt_enabled"`
+		// Absents : inchangés (anciennes versions de l'interface).
+		DoTTokenAdmit *bool `json:"dot_token_admit"`
+		WebOnDoH      *bool `json:"web_on_doh"`
 	}
 	if err := decode(r, &in); err != nil {
 		jsonError(w, http.StatusBadRequest, err.Error())
@@ -43,7 +46,14 @@ func (a *API) putEncryption(w http.ResponseWriter, r *http.Request, user string)
 		return
 	}
 	old := a.Store.Get().Encryption
-	next := state.Encryption{DoTDisabled: !in.DoT, DoHDisabled: !in.DoH, DoQDisabled: !in.DoQ, DNSCryptEnabled: in.DNSCrypt}
+	next := state.Encryption{DoTDisabled: !in.DoT, DoHDisabled: !in.DoH, DoQDisabled: !in.DoQ, DNSCryptEnabled: in.DNSCrypt,
+		DoTTokenAdmit: old.DoTTokenAdmit, WebOnDoH: old.WebOnDoH}
+	if in.DoTTokenAdmit != nil {
+		next.DoTTokenAdmit = *in.DoTTokenAdmit
+	}
+	if in.WebOnDoH != nil {
+		next.WebOnDoH = *in.WebOnDoH
+	}
 	// Écoutes d'abord : un port occupé laisse l'état enregistré inchangé,
 	// et le redémarrage suivant n'échouera pas sur ce choix.
 	if err := a.Encrypted.Apply(next); err != nil {
@@ -57,7 +67,8 @@ func (a *API) putEncryption(w http.ResponseWriter, r *http.Request, user string)
 		return
 	}
 	if old != next {
-		a.record(user, "chiffrement.modifié", "DoT "+onOff(in.DoT)+", DoH "+onOff(in.DoH)+", DoQ "+onOff(in.DoQ)+", DNSCrypt "+onOff(in.DNSCrypt))
+		a.record(user, "chiffrement.modifié", "DoT "+onOff(in.DoT)+", DoH "+onOff(in.DoH)+", DoQ "+onOff(in.DoQ)+", DNSCrypt "+onOff(in.DNSCrypt)+
+			", jeton DoT depuis Internet "+onOff(next.DoTTokenAdmit)+", interface sur le port DoH "+onOff(next.WebOnDoH))
 	}
 	writeJSON(w, a.encStatus())
 }

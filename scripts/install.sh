@@ -1,6 +1,6 @@
 #!/bin/sh
 # install.sh - installe ou met à jour Rempart avec Docker ou Podman (compose, ou unité Quadlet pour Podman sous Linux).
-# Entrées : options ci-dessous, saisies au terminal ; sorties : image, volume de secrets, conteneur démarré sur les ports standard.
+# Entrées : options ci-dessous, saisies au terminal ; sorties : image, volume de secrets, .env (interface), conteneur démarré.
 # Contexte : les secrets sont créés DANS le volume par « rempart setup-secrets » (conteneur jetable, sans réseau) : rien sur l'hôte, rien en argument.
 set -eu
 cd "$(dirname "$0")/.."
@@ -13,11 +13,22 @@ Usage : scripts/install.sh [options]
   --quadlet               Podman sous Linux : unité systemd (deploy/podman/rempart.container) au lieu de compose
   --hsm-pin               ajouter au volume de secrets le PIN d'un HSM réel (passage au HSM depuis l'interface)
   --no-build              utiliser l'image déjà présente (chargée par « load » ou tirée d'un registre interne)
+  --web-port N            port de l'interface sur la machine (défaut 8080 ; 8443 par exemple)
+  --web-lan               interface ouverte sur le réseau local (défaut : cette machine seulement)
+  --web-local             revenir à une interface accessible depuis cette machine seulement
+Les choix --web-* sont gardés dans .env (sans secret) pour les relances suivantes.
+Pour l'interface sur le port 443, à côté de DoH : Réglages → Chiffrement, une fois Rempart installé.
 Relancer le script est sans risque : les secrets déjà présents sont gardés, l'image est reconstruite.
 EOF
 }
 
 ENGINE=""; SOFTHSM=0; QUADLET=0; HSMPIN=0; BUILD=1
+# Interface : choix précédents (.env), sinon locale sur 8080.
+WEB_PORT=8080; WEB_BIND=127.0.0.1
+if [ -f .env ]; then
+  v=$(sed -n 's/^REMPART_WEB_PORT=//p' .env); [ -n "$v" ] && WEB_PORT=$v
+  v=$(sed -n 's/^REMPART_WEB_BIND=//p' .env); [ -n "$v" ] && WEB_BIND=$v
+fi
 while [ $# -gt 0 ]; do
   case "$1" in
     --engine) ENGINE="${2:-}"; shift 2 ;;
@@ -25,6 +36,9 @@ while [ $# -gt 0 ]; do
     --quadlet) QUADLET=1; shift ;;
     --hsm-pin) HSMPIN=1; shift ;;
     --no-build) BUILD=0; shift ;;
+    --web-port) WEB_PORT="${2:-}"; shift 2 ;;
+    --web-lan) WEB_BIND=0.0.0.0; shift ;;
+    --web-local) WEB_BIND=127.0.0.1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "option inconnue : $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -32,6 +46,10 @@ done
 
 die() { echo "ERREUR : $*" >&2; exit 1; }
 say() { printf '\n== %s\n' "$*"; }
+
+case "$WEB_PORT" in ''|*[!0-9]*) die "--web-port : numéro de port attendu" ;; esac
+[ "$WEB_PORT" -ge 1 ] && [ "$WEB_PORT" -le 65535 ] || die "--web-port : entre 1 et 65535"
+case " 53 853 443 80 " in *" $WEB_PORT "*) die "--web-port $WEB_PORT : déjà utilisé par le DNS. Pour l'interface sur 443, activez « Interface aussi sur le port DoH » (Réglages → Chiffrement)" ;; esac
 
 [ -t 0 ] && [ -t 1 ] || die "lancez ce script dans un terminal : il demande le mot de passe administrateur"
 
@@ -72,8 +90,8 @@ if [ "$QUADLET" = 0 ]; then
 fi
 
 # ---- ports ----
-# Ports standard, fixes : DNS 53, DoT/DoQ 853, DoH 443, HTTP 80 (ACME), interface 8080 (locale).
-PORTS="53 853 443 80 8080"
+# Ports standard, fixes : DNS 53, DoT/DoQ 853, DoH 443, HTTP 80 (ACME) ; interface au choix (8080 par défaut).
+PORTS="53 853 443 80 $WEB_PORT"
 port_busy() {
   if command -v ss >/dev/null 2>&1; then
     [ -n "$(ss -Hlntu "sport = :$1" 2>/dev/null)" ]
@@ -134,10 +152,13 @@ if [ "$QUADLET" = 1 ]; then
   if [ "$(id -u)" = 0 ]; then UNITDIR=/etc/containers/systemd; SC="systemctl"
   else UNITDIR="$HOME/.config/containers/systemd"; SC="systemctl --user"; fi
   mkdir -p "$UNITDIR"
-  cp deploy/podman/rempart.container "$UNITDIR/"
+  if [ "$WEB_BIND" = 0.0.0.0 ]; then PUB="$WEB_PORT:8080/tcp"; else PUB="$WEB_BIND:$WEB_PORT:8080/tcp"; fi
+  sed "s|^PublishPort=127.0.0.1:8080:8080/tcp|PublishPort=$PUB|" deploy/podman/rempart.container > "$UNITDIR/rempart.container"
   $SC daemon-reload
   $SC restart rempart
 else
+  # Interface : adresse et port choisis, lus par compose dans .env.
+  printf '# .env - interface de Rempart (scripts/install.sh --web-port, --web-lan) ; aucun secret.\nREMPART_WEB_BIND=%s\nREMPART_WEB_PORT=%s\n' "$WEB_BIND" "$WEB_PORT" > .env
   # Réglages propres à la machine (adresse d'écoute de l'interface…) : fichier
   # local non versionné, chargé après le fichier du dépôt.
   OVERRIDE=""; [ "$SOFTHSM" = 0 ] && [ -f docker-compose.override.yml ] && OVERRIDE="-f docker-compose.override.yml"
@@ -172,9 +193,10 @@ if [ -d secrets ]; then
   esac
 fi
 
+if [ "$WEB_BIND" = 0.0.0.0 ]; then WEB_URL="https://<nom ou adresse du serveur>:$WEB_PORT"; else WEB_URL="https://localhost:$WEB_PORT (depuis cette machine, ou par un tunnel SSH)"; fi
 cat <<EOF
 
-Interface : https://localhost:8080  (utilisateur admin)
+Interface : $WEB_URL  (utilisateur admin)
 Certificat auto-signé tant que vous n'en obtenez pas un (Sécurité → Certificat).
 Journaux : $ENGINE logs $CONTAINER
 EOF

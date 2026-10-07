@@ -50,16 +50,13 @@ L'installeur fait, dans l'ordre :
    - **mot de passe du compte `admin`** : 12 caractères au moins, saisi deux fois, sans écho.
 5. Il démarre Rempart et attend qu'il ait créé son état chiffré, puis efface le mot de passe initial du volume : il est désormais haché dans l'état.
 
-L'interface n'écoute que sur la machine elle-même. Depuis un autre poste, deux possibilités :
+L'interface n'écoute par défaut que sur la machine elle-même. Depuis un autre poste, trois possibilités :
 
 - tunnel SSH, sans rien changer : `ssh -L 8080:127.0.0.1:8080 utilisateur@serveur`, puis `https://localhost:8080` ;
-- l'ouvrir sur le réseau local : créez `docker-compose.override.yml` (non versionné, repris par l'installeur) avec l'adresse du serveur, puis relancez l'installeur. Restreignez alors l'accès avec `web.allowed_admins` et activez la double authentification.
+- l'ouvrir sur le réseau local, au port de votre choix : `./scripts/install.sh --web-lan --web-port 8443`, puis `https://<serveur>:8443` ;
+- la servir sur le port 443, à côté de DoH : Réglages → Chiffrement → « Interface aussi sur le port DoH », puis `https://<nom du serveur>`. Réservé au réseau local, même si le port 443 est redirigé depuis Internet.
 
-  ```yaml
-  services:
-    rempart:
-      ports: ["192.168.1.10:8080:8080"]
-  ```
+Dans les deux derniers cas, restreignez l'accès avec `web.allowed_admins` si besoin, et activez la double authentification.
 
 Ouvrez ensuite `https://localhost:8080` et connectez-vous en `admin`. Le navigateur prévient que le certificat est auto-signé ; c'est normal tant que vous n'en avez pas obtenu un dans Sécurité → Certificat (ACME ou CSR). Activez tout de suite la double authentification ou une clé d'accès (Réglages → Compte).
 
@@ -74,6 +71,11 @@ Dernière étape : pointez le DNS de votre box, ou de vos postes, vers l'adresse
 | `--softhsm` | `-SoftHSM` | démonstration du mode HSM avec SoftHSM2 (PIN générés dans le volume `rempart-hsm-secrets`) |
 | `--hsm-pin` | `-HsmPin` | ajoute au volume le PIN d'un HSM réel, avant le passage au HSM depuis l'interface |
 | `--no-build` | `-NoBuild` | utilise une image déjà présente (`podman load`, registre interne) |
+| `--web-port N` | `-WebPort N` | port de l'interface sur la machine (8080 par défaut, 8443 par exemple) |
+| `--web-lan` | `-WebLan` | interface ouverte sur le réseau local (par défaut : la machine seulement) |
+| `--web-local` | `-WebLocal` | revenir à une interface accessible depuis la machine seulement |
+
+Les choix `--web-*` sont gardés dans `.env` (sans secret) et repris aux relances. Pour l'interface sur le port 443 à côté de DoH, sans port à taper : Réglages → Chiffrement → « Interface aussi sur le port DoH », réservé au réseau local.
 
 ## 3. Où sont les secrets
 

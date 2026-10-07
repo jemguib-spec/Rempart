@@ -99,6 +99,9 @@ type Server struct {
 	settings atomic.Pointer[Settings]
 	policy   atomic.Pointer[policy.Policy]
 	seen     sync.Map // id d'appareil → time.Time de la dernière requête
+	// dotAdmit : le jeton d'appareil lu dans le nom TLS de DoT fait servir
+	// le client hors des réseaux autorisés (Réglages → Chiffrement).
+	dotAdmit atomic.Bool
 	servers  []*dns.Server
 	mu       sync.Mutex
 }
@@ -155,10 +158,15 @@ func WithDevice(ctx context.Context, token string) context.Context {
 
 // withSNIDevice : jeton lu dans le nom TLS de DoT. Ce nom circule en clair
 // (ClientHello, et résolution préalable du nom par le résolveur du moment) :
-// il identifie l'appareil sur les réseaux autorisés, sans ouvrir l'accès.
-func withSNIDevice(ctx context.Context, token string) context.Context {
-	return context.WithValue(ctx, deviceKey{}, devToken{token, false})
+// par défaut il identifie l'appareil sur les réseaux autorisés sans ouvrir
+// l'accès. admit, choisi par l'administrateur, lui fait ouvrir l'accès comme
+// le jeton DoH : qui observe le ClientHello peut alors le réutiliser.
+func withSNIDevice(ctx context.Context, token string, admit bool) context.Context {
+	return context.WithValue(ctx, deviceKey{}, devToken{token, admit})
 }
+
+// SetDoTTokenAdmit règle à chaud l'accès par jeton DoT depuis Internet.
+func (s *Server) SetDoTTokenAdmit(on bool) { s.dotAdmit.Store(on) }
 
 // deviceToken extrait un jeton du nom TLS demandé : premier label de
 // « <jeton>.dns.example ».
@@ -193,7 +201,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		if _, ok := w.(dns.ConnectionStater); ok {
 			if cs := w.(dns.ConnectionStater).ConnectionState(); cs != nil {
 				proto = "dot"
-				ctx = withSNIDevice(ctx, deviceToken(cs.ServerName))
+				ctx = withSNIDevice(ctx, deviceToken(cs.ServerName), s.dotAdmit.Load())
 			}
 		}
 	}

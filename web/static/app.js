@@ -1308,7 +1308,7 @@ clientTabs.all = async (el) => {
     <div class="invs" id="inv-list"></div>
   </section>
   <section class="panel stack-s">
-    <div class="gsec-h"><span class="gsec-ic">${icon("plus")}</span><div><h3>Ajouter un appareil que Rempart ne voit pas</h3><p>Pour un appareil derrière un autre routeur, ou quand le conteneur n'a pas le réseau de l'hôte. Il sera reconnu par cette adresse.</p></div></div>
+    <div class="gsec-h"><span class="gsec-ic">${icon("plus")}</span><div><h3>Déclarer un appareil du réseau local (par adresse IP ou MAC)</h3><p>Pour un appareil derrière un autre routeur, ou quand le conteneur n'a pas le réseau de l'hôte. Il sera reconnu par cette adresse.</p></div></div>
     <form id="inv-add" class="inv-add">
       <input name="addr" required placeholder="192.168.1.40 ou aa:bb:cc:dd:ee:ff" aria-label="Adresse IP ou MAC" spellcheck="false">
       <input name="name" maxlength="64" placeholder="Nom, par exemple Télé du salon" aria-label="Nom">
@@ -1552,7 +1552,7 @@ clientTabs.devices = async (el) => {
     </article>`; })}</div>` : html`<p class="empty">${icon("phone")}<br>Aucun appareil enregistré.</p>`}
   </section>
   <section class="panel stack">
-    <div class="gsec-h"><span class="gsec-ic">${icon("plus")}</span><div><h3>Ajouter un appareil</h3><p>Le profil créé ne s'affiche qu'une fois : gardez l'appareil à portée de main.</p></div></div>
+    <div class="gsec-h"><span class="gsec-ic">${icon("plus")}</span><div><h3>Créer un profil mobile</h3><p>Une adresse DoH personnelle (et un nom DoT) pour filtrer l'appareil, y compris hors du réseau. Elle ne s'affiche qu'une fois : gardez l'appareil à portée de main.</p></div></div>
     <form id="devf" class="stack-s">
       <div class="fields">
         <label class="field"><span>Nom</span><input name="name" required maxlength="64" placeholder="iPhone de Léa"></label>
@@ -1579,7 +1579,7 @@ clientTabs.devices = async (el) => {
       <details class="help" open><summary>Installer</summary><ol>
         <li><b>iPhone, iPad</b> : ouvrez le fichier .mobileconfig sur l'appareil (AirDrop, courriel), puis Réglages → Profil téléchargé → Installer. Avec une AC jointe, activez-la ensuite dans Réglages → Général → Informations → Réglages des certificats.</li>
         <li><b>Mac</b> : double-cliquez le fichier, puis Réglages Système → Confidentialité et sécurité → Profils.</li>
-        <li><b>Android 9 et plus</b> : Paramètres → Réseau → DNS privé → Nom d'hôte : ${androidHost ? html`<code>${androidHost}</code>. Ce nom circule en clair (résolution préalable, poignée de main TLS) : il identifie l'appareil sur votre réseau, mais n'ouvre pas l'accès depuis l'extérieur.` : html`<code>${r.dot_plain_host || host}</code>. Android n'utilise que DoT, sans chemin : l'appareil est reconnu par son adresse, sur votre réseau seulement. Avec un certificat couvrant <code>*.${host}</code>, le nom <code>&lt;jeton&gt;.${host}</code> l'identifierait.`} Hors du réseau, utilisez une application DoH (Intra, navigateur) avec l'adresse ci-dessus.</li>
+        <li><b>Android 9 et plus</b> : Paramètres → Réseau → DNS privé → Nom d'hôte : ${androidHost ? html`<code>${androidHost}</code>. Ce nom circule en clair (résolution préalable, poignée de main TLS) : il identifie l'appareil sur votre réseau ; depuis Internet, il n'ouvre l'accès que si l'option « DoT depuis Internet avec le jeton d'appareil » est activée (Réglages, Chiffrement).` : html`<code>${r.dot_plain_host || host}</code>. Android n'utilise que DoT, sans chemin : l'appareil est reconnu par son adresse, sur votre réseau seulement. Avec un certificat couvrant <code>*.${host}</code>, le nom <code>&lt;jeton&gt;.${host}</code> l'identifierait.`} Hors du réseau, utilisez une application DoH (Intra, navigateur) avec l'adresse ci-dessus.</li>
         <li><b>Windows 11, Firefox, Chrome</b> : indiquez l'adresse DoH ci-dessus comme serveur DNS chiffré personnalisé.</li>
       </ol></details></div>`;
     bindCopy($("#devres"));
@@ -3317,13 +3317,21 @@ setTabs.encryption = async (el) => {
         <div class="copy"><code class="small">${e.dnscrypt.stamp}</code><button type="button" data-copy="${e.dnscrypt.stamp}" data-copied="Tampon copié">${icon("copy")}Copier</button></div>
         <span class="small muted">L'adresse annoncée vient de <code>dnscrypt.stamp_addr</code> : mettez l'adresse publique vue par les clients.</span></div>` : ""}
     </section>
+    <section class="panel stack-s">
+      <h2>Accès depuis Internet et interface</h2>
+      ${e.dot.listen ? html`${sw("dot_token_admit", e.dot_token_admit, "DoT depuis Internet avec le jeton d'appareil", "Android en 4G avec le DNS privé natif : nom d'hôte <jeton>.<votre nom>, port 853 redirigé vers Rempart.")}
+      <p class="muted small">Le nom d'hôte, donc le jeton, circule en clair dans la négociation TLS : qui observe votre trafic mobile (opérateur, Wi-Fi public) peut réutiliser le jeton pour se servir de votre résolveur, sans voir vos requêtes ni vos zones internes. Révocable dans Appareils, Profils mobiles. Il faut un certificat couvrant <code>*.&lt;votre nom&gt;</code> et un enregistrement générique <code>*</code> dans votre zone publique et dans la zone locale. DoH (jeton chiffré dans l'adresse) n'a pas cette limite.</p>` : ""}
+      ${e.doh.listen ? html`${sw("web_on_doh", e.web_on_doh, `Interface aussi sur le port DoH (${e.doh.listen})`, "Accès direct par https://<nom du serveur>, sans le port 8080 ni tunnel.")}
+      <p class="muted small">Réservé aux réseaux autorisés (<code>dns.allowed_clients</code>) : depuis Internet, même avec le port 443 redirigé pour DoH, l'interface n'existe pas (404). Ouvrez-la par le nom du certificat, pas par l'adresse IP, sinon le navigateur signale un certificat qui ne correspond pas.</p>` : ""}
+    </section>
     <div><button class="primary" type="submit">Enregistrer</button></div>
   </form>`;
   bindCopy(el);
   $("#ef").onsubmit = async (ev) => {
     ev.preventDefault();
     const f = new FormData(ev.target);
-    const body = { doh_enabled: e.doh.listen ? !!f.get("doh") : false, dot_enabled: e.dot.listen ? !!f.get("dot") : false, doq_enabled: e.doq?.listen ? !!f.get("doq") : false, dnscrypt_enabled: e.dnscrypt?.listen ? !!f.get("dnscrypt") : false };
+    const body = { doh_enabled: e.doh.listen ? !!f.get("doh") : false, dot_enabled: e.dot.listen ? !!f.get("dot") : false, doq_enabled: e.doq?.listen ? !!f.get("doq") : false, dnscrypt_enabled: e.dnscrypt?.listen ? !!f.get("dnscrypt") : false,
+      dot_token_admit: e.dot.listen ? !!f.get("dot_token_admit") : false, web_on_doh: e.doh.listen ? !!f.get("web_on_doh") : false };
     await act(ev.submitter, () => api("/encryption", { method: "PUT", body }), "Chiffrement enregistré");
     setTabs.encryption(el);
   };

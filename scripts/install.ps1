@@ -2,12 +2,15 @@
 # Entrées : paramètres ci-dessous, saisies au terminal ; sorties : image, volume de secrets, conteneur démarré sur les ports standard.
 # Contexte : les secrets sont créés DANS le volume par « rempart setup-secrets » (conteneur jetable, sans réseau) : rien sur le disque Windows, rien en argument.
 #
-#   powershell -ExecutionPolicy Bypass -File scripts\install.ps1 [-Engine docker|podman] [-SoftHSM] [-HsmPin] [-NoBuild]
+#   powershell -ExecutionPolicy Bypass -File scripts\install.ps1 [-Engine docker|podman] [-SoftHSM] [-HsmPin] [-NoBuild] [-WebPort 8443] [-WebLan | -WebLocal]
 param(
   [ValidateSet("", "docker", "podman")][string]$Engine = "",
   [switch]$SoftHSM,   # démonstration du mode HSM avec SoftHSM2 (docker-compose.hsm.yml)
   [switch]$HsmPin,    # ajouter au volume le PIN d'un HSM réel (passage au HSM depuis l'interface)
-  [switch]$NoBuild    # utiliser l'image déjà présente (chargée par « load » ou tirée d'un registre interne)
+  [switch]$NoBuild,   # utiliser l'image déjà présente (chargée par « load » ou tirée d'un registre interne)
+  [int]$WebPort = 0,  # port de l'interface sur la machine (défaut 8080, ou le choix précédent gardé dans .env)
+  [switch]$WebLan,    # interface ouverte sur le réseau local
+  [switch]$WebLocal   # interface accessible depuis cette machine seulement (défaut)
 )
 $ErrorActionPreference = "Stop"
 Set-Location (Join-Path $PSScriptRoot "..")
@@ -51,11 +54,25 @@ elseif ($Engine -eq "docker" -and (Get-Command docker-compose -ErrorAction Silen
 elseif ($Engine -eq "podman" -and (Get-Command podman-compose -ErrorAction SilentlyContinue)) { $Compose = @("podman-compose") }
 else { Die "aucun outil compose trouvé pour $Engine (docker compose, podman-compose)" }
 
+# ---- interface : choix précédents (.env), puis paramètres ----
+$WebBind = "127.0.0.1"; $Port = 8080
+if (Test-Path .env) {
+  foreach ($l in Get-Content .env) {
+    if ($l -match '^REMPART_WEB_PORT=(\d+)$') { $Port = [int]$Matches[1] }
+    if ($l -match '^REMPART_WEB_BIND=(.+)$') { $WebBind = $Matches[1] }
+  }
+}
+if ($WebPort -gt 0) { $Port = $WebPort }
+if ($WebLan) { $WebBind = "0.0.0.0" }
+if ($WebLocal) { $WebBind = "127.0.0.1" }
+if ($Port -lt 1 -or $Port -gt 65535) { Die "-WebPort : entre 1 et 65535" }
+if (@(53, 853, 443, 80) -contains $Port) { Die "-WebPort $Port : déjà utilisé par le DNS. Pour l'interface sur 443 : Réglages → Chiffrement, « Interface aussi sur le port DoH »" }
+
 # ---- ports ----
-# Ports standard, fixes : DNS 53, DoT/DoQ 853, DoH 443, HTTP 80 (ACME), interface 8080 (locale).
+# Ports standard, fixes : DNS 53, DoT/DoQ 853, DoH 443, HTTP 80 (ACME) ; interface au choix.
 Quiet { & $Engine rm -f $Container }   # une version déjà lancée occupe ses propres ports
 $busy = @()
-foreach ($p in 53, 853, 443, 80, 8080) {
+foreach ($p in 53, 853, 443, 80, $Port) {
   $tcp = Get-NetTCPConnection -State Listen -LocalPort $p -ErrorAction SilentlyContinue
   $udp = Get-NetUDPEndpoint -LocalPort $p -ErrorAction SilentlyContinue
   foreach ($e in @($tcp) + @($udp)) {
@@ -106,6 +123,8 @@ Check "création des secrets"
 
 # ---- démarrage ----
 Say "Démarrage"
+# Interface : adresse et port, lus par compose dans .env (aucun secret).
+[IO.File]::WriteAllText((Join-Path (Get-Location) ".env"), "# .env - interface de Rempart (scripts\install.ps1 -WebPort, -WebLan) ; aucun secret.`nREMPART_WEB_BIND=$WebBind`nREMPART_WEB_PORT=$Port`n")
 $cexe = $Compose[0]; $cargs = @($Compose | Select-Object -Skip 1) + @("-f", $File, "up", "-d")
 & $cexe @cargs
 Check "démarrage par compose"
@@ -140,7 +159,7 @@ if (Test-Path secrets) {
 
 Write-Host @"
 
-Interface : https://localhost:8080  (utilisateur admin)
+Interface : $(if ($WebBind -eq "0.0.0.0") { "https://<nom ou adresse du serveur>:$Port" } else { "https://localhost:$Port" })  (utilisateur admin)
 Certificat auto-signé tant que vous n'en obtenez pas un (Sécurité → Certificat).
 Journaux : $Engine logs $Container
 "@

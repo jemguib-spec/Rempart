@@ -51,4 +51,14 @@ func TestEncryptionToggle(t *testing.T) {
 	if r, out := e.do(adm, "PUT", "/api/encryption", map[string]any{"doh_enabled": true}); r.StatusCode != 200 || out["doh"].(map[string]any)["running"] != true {
 		t.Fatalf("réactivation : %d %v", r.StatusCode, out)
 	}
+	// Options : enregistrées, et conservées quand une requête ne les cite pas.
+	if r, out := e.do(adm, "PUT", "/api/encryption", map[string]any{"doh_enabled": true, "web_on_doh": true, "dot_token_admit": true}); r.StatusCode != 200 || out["web_on_doh"] != true || out["dot_token_admit"] != true {
+		t.Fatalf("options : %d %v", r.StatusCode, out)
+	}
+	if r, _ := e.do(adm, "PUT", "/api/encryption", map[string]any{"doh_enabled": true}); r.StatusCode != 200 {
+		t.Fatal(r.StatusCode)
+	}
+	if st := e.a.Store.Get().Encryption; !st.WebOnDoH || !st.DoTTokenAdmit {
+		t.Fatalf("options perdues : %+v", st)
+	}
 }
