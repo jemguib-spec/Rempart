@@ -48,8 +48,15 @@ func (v *Validator) authority(r *dns.Msg, zi *zoneInfo) (*proof, error) {
 		if err != nil {
 			return nil, errors.New(k.name + "/" + dns.TypeToString[k.t] + " : " + err.Error())
 		}
-		// Un NSEC ou un NSEC3 n'est jamais synthétisé depuis un joker.
-		if k.t != dns.TypeSOA && int(s.Labels) != dns.CountLabel(k.name) {
+		// Un NSEC ou un NSEC3 n'est jamais synthétisé depuis un joker. Le
+		// NSEC dont le propriétaire est le joker lui-même (« *.zone ») n'est
+		// pas une expansion : le label « * » n'est pas compté dans le champ
+		// Labels de sa signature (RFC 4034 §3.1.3).
+		want := dns.CountLabel(k.name)
+		if strings.HasPrefix(k.name, "*.") {
+			want--
+		}
+		if k.t != dns.TypeSOA && int(s.Labels) != want {
 			return nil, errors.New(k.name + " : preuve signée comme un joker")
 		}
 		v.capTTL(set, s)

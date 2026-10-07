@@ -781,6 +781,77 @@ func (z *Zone) Answer(req *dns.Msg, do bool) *dns.Msg {
 		}
 	}
 
+	// Joker (RFC 4592) : le nom n'existe pas, mais « *.<encloser le plus
+	// proche> » existe. Réponse synthétisée au nom demandé ; les RRSIG du
+	// joker sont reprises telles quelles (leur champ Labels permet au
+	// validateur de reconstruire le joker), avec la preuve que le nom exact
+	// n'existe pas (RFC 4035 §3.1.3.3, RFC 5155 §7.2.6).
+	ce := z.closestEncloser(qname)
+	wc := "*." + ce
+	if wnode, ok := z.nodes[wc]; ok {
+		synth := func(dst *[]dns.RR, t uint16) bool {
+			if len(wnode[t]) == 0 {
+				return false
+			}
+			for _, rr := range wnode[t] {
+				c := dns.Copy(rr)
+				c.Header().Name = q.Name
+				*dst = append(*dst, c)
+			}
+			if withSig {
+				for _, s := range z.sigs[wc][t] {
+					c := dns.Copy(s)
+					c.Header().Name = q.Name
+					*dst = append(*dst, c)
+				}
+			}
+			return true
+		}
+		proveNoExact := func() {
+			if !withSig {
+				return
+			}
+			if z.n3 != nil {
+				z.appendNSEC3(&resp.Ns, z.n3.cover(nextCloser(qname, ce), z.Origin), map[string]bool{})
+			} else {
+				appendSet(&resp.Ns, z.covering(qname), dns.TypeNSEC)
+			}
+		}
+		if synth(&resp.Answer, q.Qtype) {
+			proveNoExact()
+			return resp
+		}
+		if synth(&resp.Answer, dns.TypeCNAME) {
+			target := strings.ToLower(wnode[dns.TypeCNAME][0].(*dns.CNAME).Target)
+			if dns.IsSubDomain(z.Origin, target) {
+				appendSet(&resp.Answer, target, q.Qtype)
+			}
+			proveNoExact()
+			return resp
+		}
+		// NODATA par le joker (RFC 4035 §3.1.3.4, RFC 5155 §7.2.5).
+		addSOA()
+		if withSig {
+			if z.n3 != nil {
+				done := map[string]bool{}
+				if o, ok := z.n3.match(ce, z.Origin); ok {
+					z.appendNSEC3(&resp.Ns, o, done)
+				}
+				z.appendNSEC3(&resp.Ns, z.n3.cover(nextCloser(qname, ce), z.Origin), done)
+				if o, ok := z.n3.match(wc, z.Origin); ok {
+					z.appendNSEC3(&resp.Ns, o, done)
+				}
+			} else {
+				c := z.covering(qname)
+				appendSet(&resp.Ns, c, dns.TypeNSEC)
+				if c != wc {
+					appendSet(&resp.Ns, wc, dns.TypeNSEC)
+				}
+			}
+		}
+		return resp
+	}
+
 	resp.Rcode = dns.RcodeNameError
 	addSOA()
 	if withSig && z.n3 != nil {

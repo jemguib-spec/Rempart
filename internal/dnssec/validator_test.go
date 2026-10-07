@@ -306,3 +306,70 @@ func TestCompareCanonical(t *testing.T) {
 		}
 	}
 }
+
+// Joker (RFC 4592) : réponses synthétisées par une zone locale, NSEC et
+// NSEC3, validées de bout en bout comme le ferait un résolveur.
+func TestValidateWildcard(t *testing.T) {
+	ks := testutil.Keystore(t)
+	recs := []string{"* IN A 192.0.2.7", "fixe IN A 192.0.2.8", "*.sub IN TXT \"t\"", "*.alias IN CNAME fixe"}
+	wn := build(t, ks, "w.test.", true, false, recs...)
+	wn3 := build(t, ks, "wn3.test.", true, true, recs...)
+	ds := func(z *zones.Zone) string {
+		f := strings.Fields(z.DS()[0])
+		return strings.Join(f[len(f)-4:], " ")
+	}
+	tld := build(t, ks, "test.", true, false,
+		"w IN NS ns.w.test.", "w IN DS "+ds(wn), "wn3 IN NS ns.wn3.test.", "wn3 IN DS "+ds(wn3))
+	w := &world{zones: map[string]*zones.Zone{"test.": tld, "w.test.": wn, "wn3.test.": wn3}, anchor: tld.DS()[0]}
+	v := w.validator(t)
+	for _, apex := range []string{"w.test.", "wn3.test."} {
+		for _, c := range []struct {
+			name  string
+			qt    uint16
+			rcode int
+			ans   string // adresse ou cible attendue dans la réponse, vide pour NODATA
+		}{
+			{"abc." + apex, dns.TypeA, dns.RcodeSuccess, "192.0.2.7"},
+			{"x.y.z." + apex, dns.TypeA, dns.RcodeSuccess, "192.0.2.7"}, // plusieurs labels sous le joker
+			{"fixe." + apex, dns.TypeA, dns.RcodeSuccess, "192.0.2.8"},  // le nom exact l'emporte
+			{"abc." + apex, dns.TypeMX, dns.RcodeSuccess, ""},           // NODATA par le joker
+			{"q.sub." + apex, dns.TypeTXT, dns.RcodeSuccess, "t"},
+			{"q.alias." + apex, dns.TypeA, dns.RcodeSuccess, "192.0.2.8"}, // CNAME synthétisé, suivi
+		} {
+			st, why, r := ask(t, w, v, c.name, c.qt)
+			if st != Secure || r.Rcode != c.rcode {
+				t.Errorf("%s %s : %s (%s), rcode %s ; attendu sûr", c.name, dns.TypeToString[c.qt], st, why, dns.RcodeToString[r.Rcode])
+				continue
+			}
+			got := ""
+			for _, rr := range r.Answer {
+				switch x := rr.(type) {
+				case *dns.A:
+					got = x.A.String()
+				case *dns.TXT:
+					got = strings.Join(x.Txt, "")
+				}
+			}
+			if got != c.ans {
+				t.Errorf("%s %s : réponse %q, attendu %q", c.name, dns.TypeToString[c.qt], got, c.ans)
+			}
+			if c.ans != "" && !strings.EqualFold(r.Answer[0].Header().Name, c.name) {
+				t.Errorf("%s : propriétaire %s, attendu le nom demandé", c.name, r.Answer[0].Header().Name)
+			}
+		}
+	}
+	// Falsification : une adresse synthétisée modifiée doit être rejetée.
+	w.tamper = func(q dns.Question, r *dns.Msg) {
+		for _, rr := range r.Answer {
+			if a, ok := rr.(*dns.A); ok && strings.HasPrefix(q.Name, "abc.") {
+				a.A = a.A.To4()
+				a.A[3] = 99
+			}
+		}
+	}
+	for _, apex := range []string{"w.test.", "wn3.test."} {
+		if st, _, _ := ask(t, w, w.validator(t), "abc."+apex, dns.TypeA); st != Bogus {
+			t.Errorf("abc.%s falsifié : %s, attendu falsifié", apex, st)
+		}
+	}
+}
