@@ -18,8 +18,9 @@ PublishPort=853:853/tcp
 PublishPort=853:853/udp
 # DNS-over-HTTPS (RFC 8484) : https://<serveur>/dns-query
 PublishPort=443:443/tcp
-# HTTP : défi ACME http-01 (tls.acme_http_listen, ouvert le temps du défi)
-PublishPort=80:80/tcp
+# HTTP : seulement pour le défi ACME http-01 (tls.acme_http_listen). Inutile
+# avec dns-01 chez OVH ou Cloudflare, qui n'ouvre aucun port.
+# PublishPort=80:80/tcp
 PublishPort=127.0.0.1:8080:8080/tcp
 # Serveur DHCP (Appareils → DHCP) : il faut le réseau de l'hôte pour les
 # diffusions du port 67. Remplacez les PublishPort= par Network=host, retirez

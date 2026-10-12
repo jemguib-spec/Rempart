@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/rempart-dns/rempart/internal/acmedns"
 	"github.com/rempart-dns/rempart/internal/filter"
 	"github.com/rempart-dns/rempart/internal/keystore"
 	"github.com/rempart-dns/rempart/internal/migrate"
@@ -450,10 +451,21 @@ func (a *API) parentHasDS(ctx context.Context, zone string, want []string) (uint
 
 func (a *API) getTLS(w http.ResponseWriter, r *http.Request, _ string) {
 	st := a.Store.Get().TLS
+	d := st.ACME.DNS
+	secrets := map[string]bool{
+		"ovh_app_secret": d.OVHAppSecret != "", "ovh_consumer_key": d.OVHConsumerKey != "",
+		"cloudflare_token": d.CloudflareToken != "",
+	}
+	st.ACME.DNS.OVHAppSecret, st.ACME.DNS.OVHConsumerKey, st.ACME.DNS.CloudflareToken = "", "", ""
+	st.Names = slices.Clone(st.Names)
+	running, step := a.acme.status()
 	writeJSON(w, map[string]any{
 		"info": a.TLS.Info(), "config": st, "locked": a.TLS.Locked(),
 		"directories": tlsutil.Directories, "http01_listen": a.HTTP01Listen,
 		"needs_renewal": a.TLS.NeedsRenewal(time.Now()),
+		"dns_providers": acmedns.Providers, "dns_secrets_set": secrets,
+		"ovh_token_url": acmedns.OVHTokenURL(d.OVHEndpoint, d.Zone),
+		"issuing":       running, "issuing_step": step,
 	})
 }
 
@@ -464,8 +476,9 @@ func validNames(names []string) ([]string, error) {
 		if n == "" {
 			continue
 		}
-		if _, ok := dns.IsDomainName(n); !ok || strings.ContainsAny(n, " /") {
-			return nil, fmt.Errorf("nom invalide : %q", n)
+		if _, ok := dns.IsDomainName(n); !ok || strings.ContainsAny(n, " /") ||
+			strings.Contains(strings.TrimPrefix(n, "*."), "*") {
+			return nil, fmt.Errorf("nom invalide : %q (un joker n'est admis qu'en premier label : *.dns.example.fr)", n)
 		}
 		if !slices.Contains(out, n) {
 			out = append(out, n)
@@ -484,7 +497,8 @@ func (a *API) putTLSConfig(w http.ResponseWriter, r *http.Request, user string) 
 			DirectoryURL string `json:"directory_url"`
 			Email        string
 			Challenge    string
-			CABundle     string `json:"ca_bundle"`
+			CABundle     string        `json:"ca_bundle"`
+			DNS          state.ACMEDNS `json:"dns"`
 		}
 	}
 	if err := decode(r, &in); err != nil {
@@ -500,13 +514,27 @@ func (a *API) putTLSConfig(w http.ResponseWriter, r *http.Request, user string) 
 		jsonError(w, http.StatusBadRequest, "défi http-01 ou dns-01 attendu")
 		return
 	}
+	if in.ACME.Challenge != "dns-01" {
+		for _, n := range names {
+			if strings.HasPrefix(n, "*.") {
+				jsonError(w, http.StatusBadRequest, n+" : un nom joker exige le défi dns-01")
+				return
+			}
+		}
+	}
 	if strings.TrimSpace(in.ACME.CABundle) != "" {
 		if _, err := upstream.CertPool(in.ACME.CABundle); err != nil {
 			jsonError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 	}
+	dnsCfg := in.ACME.DNS
+	if err := mergeACMEDNS(a.Store.Get().TLS.ACME.DNS, &dnsCfg, in.ACME.Challenge == "dns-01"); err != nil {
+		jsonError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if err := a.Store.Update(func(s *state.State) error {
+		s.TLS.ACME.DNS = dnsCfg
 		s.TLS.Names = names
 		if s.TLS.ACME.DirectoryURL != in.ACME.DirectoryURL || s.TLS.ACME.CABundle != in.ACME.CABundle {
 			s.TLS.ACME.AccountURL, s.TLS.ACME.EABKeyID = "", "" // autre AC : nouveau compte
@@ -518,7 +546,14 @@ func (a *API) putTLSConfig(w http.ResponseWriter, r *http.Request, user string) 
 		jsonError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	a.record(user, "tls.configuration", strings.Join(names, ", ")+" ; ACME "+in.ACME.DirectoryURL)
+	detail := strings.Join(names, ", ") + " ; ACME " + in.ACME.DirectoryURL + " ; " + in.ACME.Challenge
+	if in.ACME.Challenge == "dns-01" {
+		detail += " via " + dnsCfg.Provider
+		if dnsCfg.Zone != "" {
+			detail += " (" + dnsCfg.Zone + ")"
+		}
+	}
+	a.record(user, "tls.configuration", detail)
 	a.getTLS(w, r, user)
 }
 
@@ -526,9 +561,7 @@ func (a *API) acmeOptions() tlsutil.ACMEOptions {
 	st := a.Store.Get().TLS
 	return tlsutil.ACMEOptions{DirectoryURL: st.ACME.DirectoryURL, Email: st.ACME.Email, AccountURL: st.ACME.AccountURL,
 		Challenge: st.ACME.Challenge, CABundle: st.ACME.CABundle, Names: st.Names, HTTPListen: a.HTTP01Listen,
-		DNS01: func(fqdn, value string, add bool) error {
-			return a.Zones.SetChallenge(a.Store.Get().Zones, fqdn, value, add)
-		}}
+		DNS01: a.dns01Solver(), Progress: a.acme.setStep}
 }
 
 func (a *API) acmeRegister(w http.ResponseWriter, r *http.Request, user string) {
@@ -590,13 +623,23 @@ func (a *API) IssueCertificate(ctx context.Context, actor string) error {
 	return nil
 }
 
+// acmeIssue lance la demande en arrière-plan : avec dns-01 chez un
+// hébergeur public, l'attente de la propagation dépasse souvent la durée
+// d'une requête HTTP. L'avancement se lit dans GET /api/tls (issuing,
+// issuing_step), le résultat dans config.acme.last_error / last_success.
 func (a *API) acmeIssue(w http.ResponseWriter, r *http.Request, user string) {
-	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
-	defer cancel()
-	if err := a.IssueCertificate(ctx, user); err != nil {
-		jsonError(w, http.StatusBadGateway, err.Error())
+	if !a.acme.start() {
+		jsonError(w, http.StatusConflict, "une demande de certificat est déjà en cours")
 		return
 	}
+	go func() {
+		defer a.acme.done()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		_ = a.IssueCertificate(ctx, user)
+	}()
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusAccepted)
 	a.getTLS(w, r, user)
 }
 

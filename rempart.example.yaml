@@ -32,7 +32,9 @@ tls:
   self_signed_names: [rempart.lan, localhost]
   # Le certificat se gère de préférence depuis l'interface (Sécurité →
   # Certificat) : ACME (Let's Encrypt, EJBCA, EverTrust Horizon…) ou CSR à
-  # faire signer par votre PKI. Écoute ouverte le temps d'un défi http-01 :
+  # faire signer par votre PKI. Le défi dns-01 chez OVHcloud ou Cloudflare
+  # n'ouvre aucun port. Écoute ouverte le temps d'un défi http-01 (publiez
+  # alors le port 80 du conteneur) :
   acme_http_listen: ":80"
   # Imposer une chaîne (l'interface ne pourra plus la changer) :
   # cert_file: /etc/rempart/fullchain.pem

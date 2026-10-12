@@ -1,5 +1,18 @@
 # Journal des versions
 
+## Non publié
+
+### Certificat sans port ouvert
+
+- **Défi ACME dns-01 chez l'hébergeur DNS public**, OVHcloud (Europe, Canada, US) et Cloudflare. Rempart publie le TXT `_acme-challenge` par l'API HTTPS de l'hébergeur et attend que chaque serveur faisant autorité de la zone le serve. Il laisse ensuite l'AC valider, puis retire l'enregistrement, même en cas d'échec. Let's Encrypt fonctionne donc sans aucun port entrant, ni sur la machine ni sur la box : seulement des requêtes sortantes. Nouveau paquet `internal/acmedns`, sans dépendance ajoutée.
+- **Noms joker** (`*.dns.example.fr`) acceptés avec dns-01 : c'est le certificat qu'attend le jeton par appareil du DNS privé Android. Un joker n'est admis qu'en premier label, et refusé avec http-01.
+- Délégation par CNAME de `_acme-challenge` suivie automatiquement : les clés d'API peuvent n'avoir de droits que sur une petite zone dédiée.
+- Identifiants de l'hébergeur scellés avec l'état, jamais renvoyés par l'API (seulement `dns_secrets_set`), jamais écrits dans les erreurs ni l'audit. Ils sont gardés tant que le fournisseur, la zone et le compte ne changent pas, sinon il faut les ressaisir. Appels à l'API avec TLS vérifié, sans suivi de redirection, réponses bornées à 1 Mio.
+- Tous les défis d'une commande sont publiés d'abord ; la propagation n'est attendue qu'une fois (un nom et son joker partagent le même TXT). Si aucun serveur de la zone ne répond (DNS sortant filtré), Rempart attend 90 s puis laisse l'AC essayer.
+- `POST /api/tls/acme/issue` répond désormais **202** et travaille en arrière-plan (409 si une demande est en cours) : l'attente de la propagation dépassait la durée d'une requête HTTP. `GET /api/tls` donne `issuing` et `issuing_step`, et l'interface affiche l'étape en cours. Le renouvellement automatique dispose de 10 minutes.
+- Nouveau `POST /api/tls/acme/dns-test` : publie puis retire un TXT de test chez l'hébergeur, sans solliciter l'AC ni ses limites de débit.
+- **Le port 80 n'est plus publié** par `docker-compose.yml`, `docker-compose.hsm.yml` ni l'unité Quadlet, et l'installeur ne le vérifie plus. Décommentez-le seulement pour le défi http-01. dns-01 devient le défi par défaut des nouvelles installations ; une installation existante garde son choix.
+
 ## 1.1.0 — 2026-10-06
 
 ### Accès mobile et interface

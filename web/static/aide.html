@@ -48,7 +48,7 @@
 powershell -ExecutionPolicy Bypass -File scripts\install.ps1   # Windows</code></pre>
     <p>L'installeur prend Podman s'il est présent, sinon Docker. Il construit l'image, puis vous demande le mot de passe du compte <code>admin</code>. Il génère la phrase du keystore et l'affiche <b>une seule fois</b> : rangez-la dans votre gestionnaire de mots de passe, elle servira pour restaurer une sauvegarde. Enfin, il démarre Rempart. Le relancer met Rempart à jour sans toucher aux secrets.</p>
     <p>Les secrets ne sont jamais écrits dans le dossier du projet. Ils sont dans un volume dédié (<code>rempart-secrets</code>), lisible seulement par Rempart. Le mot de passe initial en est effacé dès que Rempart l'a enregistré (haché).</p>
-    <p>Ports standard : DNS 53, DNS chiffré 853 et 443, HTTP 80 (certificat ACME), interface 8080 sur la machine elle-même. Un port déjà pris arrête l'installation, avec le nom du programme qui l'occupe.</p>
+    <p>Ports standard : DNS 53, DNS chiffré 853 et 443, interface 8080 sur la machine elle-même. Aucun port à ouvrir sur la box pour le certificat (défi dns-01 chez OVHcloud ou Cloudflare) ; le port 80 n'est publié que pour le défi http-01. Un port déjà pris arrête l'installation, avec le nom du programme qui l'occupe.</p>
     <div class="callout"><div>En mode sans root, ouvrir le port 53 demande sur l'hôte : <code>sysctl net.ipv4.ip_unprivileged_port_start=53</code>.</div></div>
 
     <h3 id="connexion">Se connecter</h3>
@@ -254,7 +254,13 @@ powershell -ExecutionPolicy Bypass -File scripts\install.ps1   # Windows</code><
     <h3 id="certificat">Certificat (interface, DoT, DoH)</h3>
     <p>Sécurité → Certificat. La clé privée reste dans le keystore (ou le HSM) ; seule une demande signée en sort.</p>
     <ul>
-      <li><b>ACME</b> : Let's Encrypt, EJBCA, EverTrust Horizon, Smallstep, Vault… Défi <code>http-01</code> (port 80 ouvert le temps du défi) ou <code>dns-01</code> publié dans votre zone signée. Liaison de compte externe (EAB) prise en charge. Renouvellement automatique au dernier tiers de la validité.</li>
+      <li><b>ACME</b> : Let's Encrypt, EJBCA, EverTrust Horizon, Smallstep, Vault… Liaison de compte externe (EAB) prise en charge. Renouvellement automatique au dernier tiers de la validité.
+        <ul>
+          <li><b>dns-01 chez votre hébergeur DNS</b> (recommandé, OVHcloud ou Cloudflare) : Rempart publie le TXT <code>_acme-challenge</code> par l'API de l'hébergeur, attend que tous les serveurs de la zone le servent, laisse l'AC valider, puis le retire. <b>Aucun port à ouvrir</b>, ni sur la machine ni sur la box : seulement des requêtes sortantes. Les noms joker (<code>*.dns.example.fr</code>, utiles au DNS privé d'Android) deviennent possibles. « Tester l'accès à l'API DNS » vérifie les clés sans solliciter l'AC.</li>
+          <li><b>dns-01 dans une zone locale</b> de Rempart : pour une AC interne qui interroge Rempart.</li>
+          <li><b>http-01</b> : l'AC contacte Rempart sur le port 80 depuis Internet ; il faut publier ce port (il ne l'est plus par défaut) et le rediriger sur la box.</li>
+        </ul></li>
+      <li><b>Clés de l'hébergeur</b> : OVHcloud, clé d'application, secret et clé consommateur créés depuis le lien de la page (droits préremplis et limités aux enregistrements de la zone, validité illimitée pour le renouvellement). Cloudflare, jeton « Edit zone DNS » limité à la zone. Ils sont scellés avec l'état et jamais réaffichés. Pour réduire encore leurs droits, déléguez <code>_acme-challenge</code> par un CNAME vers une petite zone dédiée : Rempart suit le CNAME.</li>
       <li><b>CSR et import</b> pour toute autre PKI : Rempart produit la demande, vous importez la chaîne signée. Elle est vérifiée puis mise en service à chaud.</li>
     </ul>
 

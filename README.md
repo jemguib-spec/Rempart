@@ -42,7 +42,7 @@ powershell -ExecutionPolicy Bypass -File scripts\install.ps1   # Windows (Docker
 
 L'installeur choisit Podman s'il est présent, sinon Docker (`--engine docker|podman`, `-Engine` sous Windows), construit l'image, crée les secrets, démarre Rempart et vérifie qu'il a créé son état. On peut le relancer pour une mise à jour : les secrets existants sont gardés et l'image est reconstruite. Sur un serveur Linux avec Podman, `--quadlet` installe l'unité systemd (`deploy/podman/rempart.container`) au lieu de compose.
 
-**Ports standard** : DNS 53 (UDP et TCP), DoT et DoQ 853, DoH 443, HTTP 80 (défi ACME http-01), interface sur `127.0.0.1:8080`. Si l'un d'eux est déjà pris, l'installeur s'arrête et indique le processus en cause (sous Linux, le port 53 est souvent tenu par systemd-resolved : `DNSStubListener=no` dans `/etc/systemd/resolved.conf`). Podman sans root exige `sysctl net.ipv4.ip_unprivileged_port_start=53` sur l'hôte ; l'installeur le vérifie.
+**Ports standard** : DNS 53 (UDP et TCP), DoT et DoQ 853, DoH 443, interface sur `127.0.0.1:8080`. Aucun port n'est à ouvrir sur la box pour le certificat : il s'obtient par le défi dns-01 chez votre hébergeur DNS. Le port 80 n'est plus publié ; décommentez-le dans `docker-compose.yml` ou l'unité Quadlet seulement pour le défi http-01. Si l'un d'eux est déjà pris, l'installeur s'arrête et indique le processus en cause (sous Linux, le port 53 est souvent tenu par systemd-resolved : `DNSStubListener=no` dans `/etc/systemd/resolved.conf`). Podman sans root exige `sysctl net.ipv4.ip_unprivileged_port_start=53` sur l'hôte ; l'installeur le vérifie.
 
 **Secrets : aucun fichier dans le projet.** Ils vivent dans un volume dédié, `rempart-secrets`, monté en lecture seule sur `/run/secrets`. Ce sont des fichiers 0400 de l'utilisateur du conteneur (65532), dans un dossier 0700. Ils sont écrits par `rempart setup-secrets`, lancé dans un conteneur jetable sans réseau :
 
@@ -58,7 +58,7 @@ Limite : le volume protège les secrets par les droits du système, pas par du c
 
 Une installation faite avec l'ancien dossier `secrets/` est reprise telle quelle : l'installeur passe `secrets/keystore_passphrase.txt` au conteneur par l'entrée standard, puis propose de supprimer le dossier.
 
-Puis ouvrez `https://<serveur>:8080` (l'interface n'écoute que sur la machine elle-même : passez par un VPN ou un proxy inverse pour l'ouvrir ailleurs). Le certificat est auto-signé tant que vous n'en obtenez pas un depuis l'interface (ACME ou CSR). L'utilisateur est `admin`, avec le mot de passe choisi à l'installation. Pointez ensuite le DNS de votre box ou de vos postes vers l'adresse du serveur.
+Puis ouvrez `https://<serveur>:8080` (l'interface n'écoute que sur la machine elle-même : passez par un VPN ou un proxy inverse pour l'ouvrir ailleurs). Le certificat est auto-signé tant que vous n'en obtenez pas un depuis l'interface (ACME, sans port à ouvrir grâce au défi dns-01 chez OVHcloud ou Cloudflare, ou CSR). L'utilisateur est `admin`, avec le mot de passe choisi à l'installation. Pointez ensuite le DNS de votre box ou de vos postes vers l'adresse du serveur.
 
 Sans l'installeur, l'ordre est le même : construire l'image, créer le volume, lancer `setup-secrets`, démarrer.
 
@@ -316,8 +316,25 @@ Les chemins de l'archive sont contrôlés (ni chemin absolu, ni `..`, ni lien), 
 
 La clé reste dans le keystore (dans le HSM s'il est configuré) ; seule une demande signée en sort. Sécurité → Certificat propose deux méthodes :
 
-- **ACME (RFC 8555)**, avec n'importe quelle AC compatible : Let's Encrypt, EJBCA (`https://<serveur>/ejbca/acme/<alias>/directory`), EverTrust Horizon (`https://<serveur>/acme/<profil>/directory`), Smallstep, Vault… Liaison de compte externe (EAB) prise en charge ; la clé HMAC sert à l'inscription puis est effacée. Défi **http-01** (écoute temporaire sur `tls.acme_http_listen`) ou **dns-01**, publié par Rempart dans votre zone locale signée (adapté à une PKI interne dont l'AC interroge Rempart). Les AC internes se déclarent par leur certificat PEM : la vérification TLS n'est jamais désactivée. Renouvellement automatique au dernier tiers de la validité.
+- **ACME (RFC 8555)**, avec n'importe quelle AC compatible : Let's Encrypt, EJBCA (`https://<serveur>/ejbca/acme/<alias>/directory`), EverTrust Horizon (`https://<serveur>/acme/<profil>/directory`), Smallstep, Vault… Liaison de compte externe (EAB) prise en charge ; la clé HMAC sert à l'inscription puis est effacée. Trois façons de prouver la possession du nom, détaillées plus bas. Les AC internes se déclarent par leur certificat PEM : la vérification TLS n'est jamais désactivée. Renouvellement automatique au dernier tiers de la validité.
 - **CSR et import** pour toute autre PKI : Rempart produit la CSR, vous importez la chaîne signée. Le certificat est contrôlé (correspondance avec la clé, ordre de la chaîne, `serverAuth`, `digitalSignature`) avant d'être mis en service à chaud.
+
+**Défis ACME.**
+
+| Défi | Port entrant | Joker | Pour |
+|---|---|---|---|
+| **dns-01 chez l'hébergeur DNS** (OVHcloud, Cloudflare) | aucun | ✅ | Let's Encrypt et toute AC publique : choix par défaut |
+| dns-01 dans une zone locale de Rempart | aucun | ✅ | une AC interne qui interroge Rempart |
+| http-01 | 80, ouvert depuis Internet | ❌ | si le domaine n'a pas d'API DNS |
+
+Avec un hébergeur, Rempart publie le TXT `_acme-challenge` par l'API HTTPS de l'hébergeur. Il attend ensuite que chaque serveur faisant autorité de la zone le serve : il interroge ces serveurs directement, sans passer par les caches. Puis il laisse l'AC valider et retire l'enregistrement, même en cas d'échec. Un nom et son joker partagent le même TXT : tout est publié d'abord, et la propagation n'est attendue qu'une fois. Si le DNS sortant est filtré et qu'aucun serveur de la zone ne répond, Rempart attend 90 secondes puis laisse l'AC essayer. La demande tourne en arrière-plan et l'interface affiche son étape.
+
+- **OVHcloud** : clé d'application, secret et clé consommateur. Le lien de l'interface ouvre la page `createToken` avec des droits limités aux enregistrements de la zone (`GET /domain/zone/<zone>/record*`, `POST …/record`, `POST …/refresh`, `DELETE …/record/*`). Choisissez une validité illimitée, sinon le renouvellement automatique s'arrêtera. Points d'accès Europe, Canada et US.
+- **Cloudflare** : un jeton d'API (modèle « Edit zone DNS » : Zone → Zone → Read, Zone → DNS → Edit), limité à la zone. Jamais la clé globale.
+- Les secrets sont scellés avec l'état, jamais renvoyés par l'API, jamais écrits dans les erreurs ni l'audit. Laissés vides à l'enregistrement, ils sont gardés, sauf si le fournisseur, la zone ou le compte changent : il faut alors les ressaisir, pour qu'ils ne puissent pas partir vers un autre compte. Les appels à l'API vérifient le certificat TLS et ne suivent aucune redirection.
+- **Moindre privilège** : déléguez `_acme-challenge.dns.example.fr` par un CNAME vers une petite zone dédiée (`_acme-challenge.acme.example.fr`), et donnez à Rempart des clés limitées à cette zone. Rempart suit le CNAME, comme l'AC.
+- « Tester l'accès à l'API DNS » publie puis retire un TXT de test, sans solliciter l'AC ni ses limites de débit.
+- `POST /api/tls/acme/issue` répond 202 ; l'avancement se lit dans `GET /api/tls` (`issuing`, `issuing_step`).
 
 ## Rotation des clés DNSSEC
 
@@ -437,7 +454,7 @@ curl -H @/run/secrets/rempart-auth https://rempart:8080/api/zones/maison.lan/ds?
 
 Points d'entrée utiles : `POST /api/tls/csr`, `POST /api/tls/certificate`, `POST /api/tls/acme/issue`, `GET /api/zones/{zone}/ds`, `POST /api/zones/{zone}/rollover`, `POST /api/zones/{zone}/ds-confirm`.
 
-**Aide et console API.** L'interface sert deux pages, liées depuis son menu : `/aide.html`, l'aide complète, et `/api.html`, la console qui décrit les 124 routes de l'API (paramètres, corps, portée) et les exécute avec la session ou un jeton, en montrant la commande `curl` équivalente. `/openapi.json` (OpenAPI 3) sert à Postman ou à un générateur de client. Le catalogue est `web/static/api-spec.js` : un test (`web/apispec_test.go`) échoue si une route d'`internal/api/api.go` n'y figure pas ou n'a pas la même portée. Après modification, régénérez `openapi.json` avec `node scripts/gen-openapi.mjs`.
+**Aide et console API.** L'interface sert deux pages, liées depuis son menu : `/aide.html`, l'aide complète, et `/api.html`, la console qui décrit les 125 routes de l'API (paramètres, corps, portée) et les exécute avec la session ou un jeton, en montrant la commande `curl` équivalente. `/openapi.json` (OpenAPI 3) sert à Postman ou à un générateur de client. Le catalogue est `web/static/api-spec.js` : un test (`web/apispec_test.go`) échoue si une route d'`internal/api/api.go` n'y figure pas ou n'a pas la même portée. Après modification, régénérez `openapi.json` avec `node scripts/gen-openapi.mjs`.
 
 **Créer un jeton par script (installation automatisée).** Un compte administrateur, local ou LDAP, ouvre une session par `POST /api/login` (puis `POST /api/login/otp` si le TOTP est actif) et crée le jeton par `POST /api/tokens`. `scripts/rempart-token.sh` (et `rempart-token.ps1`) font tout. Le mot de passe est demandé au terminal sans écho, ou lu dans le fichier désigné par `REMPART_PASSWORD_FILE` (0600, par exemple un secret Ansible déchiffré), et le code TOTP dans `REMPART_OTP`. Aucune option ne désactive la vérification du certificat : déclarez l'AC (`--cacert`). Le jeton est écrit en 0600 sous forme d'en-tête pour `curl -H @fichier` :
 
@@ -492,6 +509,7 @@ client ─▶ ACL (ou jeton d'appareil) ─▶ limite de débit ─▶ zones loc
 
 | Dossier | Rôle |
 |---|---|
+| `internal/acmedns` | défi dns-01 chez OVHcloud et Cloudflare, attente de la propagation |
 | `internal/keystore` | abstraction des clés : logiciel (Argon2id + AES-GCM) ou PKCS#11 |
 | `internal/zones` | zones faisant autorité, signature DNSSEC, NSEC et NSEC3, historique IXFR |
 | `internal/filter`, `internal/blocker` | listes hosts/Adblock, recherche par suffixe, mises à jour |

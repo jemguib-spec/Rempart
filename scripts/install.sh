@@ -90,8 +90,8 @@ if [ "$QUADLET" = 0 ]; then
 fi
 
 # ---- ports ----
-# Ports standard, fixes : DNS 53, DoT/DoQ 853, DoH 443, HTTP 80 (ACME) ; interface au choix (8080 par défaut).
-PORTS="53 853 443 80 $WEB_PORT"
+# Ports standard, fixes : DNS 53, DoT/DoQ 853, DoH 443 ; interface au choix (8080 par défaut). Port 80 (défi http-01) non publié par défaut.
+PORTS="53 853 443 $WEB_PORT"
 port_busy() {
   if command -v ss >/dev/null 2>&1; then
     [ -n "$(ss -Hlntu "sport = :$1" 2>/dev/null)" ]

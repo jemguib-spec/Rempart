@@ -94,6 +94,7 @@ type API struct {
 	quorum   quorumState
 	idp      identityState
 	auditChk auditCheck
+	acme     acmeJob
 }
 
 func (a *API) Handler(ttl time.Duration) http.Handler {
@@ -194,6 +195,7 @@ func (a *API) Handler(ttl time.Duration) http.Handler {
 	auth("tls", "PUT /api/tls/config", a.putTLSConfig)
 	auth("tls", "POST /api/tls/acme/register", a.acmeRegister)
 	auth("tls", "POST /api/tls/acme/issue", a.acmeIssue)
+	auth("tls", "POST /api/tls/acme/dns-test", a.acmeDNSTest)
 	auth("tls", "POST /api/tls/csr", a.tlsCSR)
 	auth("tls", "POST /api/tls/certificate", a.tlsInstall)
 	auth("tls", "POST /api/tls/selfsigned", a.tlsSelfSigned)

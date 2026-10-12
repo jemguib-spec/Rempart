@@ -1,5 +1,6 @@
 // acme.go - client ACME (RFC 8555) pour le certificat TLS, toute AC compatible.
-// Clé de compte et clé TLS dans le keystore, EAB non conservé, défis http-01/dns-01.
+// Clé de compte et clé TLS dans le keystore, EAB non conservé, défis http-01/dns-01
+// (zone locale ou hébergeur DNS public : aucun port entrant).
 // Rempart ; golang.org/x/crypto/acme (vendorisé).
 
 package tlsutil
@@ -40,7 +41,7 @@ type ACMEDirectory struct {
 // Horizon : EverTrust) ; toute autre AC ACME (RFC 8555) s'utilise avec son URL.
 var Directories = []ACMEDirectory{
 	{ID: "letsencrypt", Name: "Let's Encrypt", URL: "https://acme-v02.api.letsencrypt.org/directory", EAB: "none",
-		Note: "AC publique gratuite ; le nom doit être résolvable publiquement (http-01) ou délégué (dns-01)."},
+		Note: "AC publique gratuite. Avec dns-01 chez votre hébergeur DNS (OVHcloud, Cloudflare), aucun port à ouvrir et noms joker possibles ; http-01 exige le port 80 ouvert depuis Internet."},
 	{ID: "letsencrypt-staging", Name: "Let's Encrypt (test)", URL: "https://acme-staging-v02.api.letsencrypt.org/directory", EAB: "none",
 		Note: "Environnement de test : certificats non reconnus, limites de débit élevées."},
 	{ID: "ejbca", Name: "EJBCA (Keyfactor)", URL: "https://<serveur>/ejbca/acme/<alias>/directory", EAB: "optional", Template: true,
@@ -60,9 +61,26 @@ type ACMEOptions struct {
 	CABundle     string   // AC (PEM) de confiance pour joindre une AC interne
 	Names        []string // noms du certificat
 	HTTPListen   string   // écoute temporaire pour http-01 (":80")
-	// DNS01 publie (add) ou retire le TXT _acme-challenge dans une zone
-	// locale signée de Rempart.
-	DNS01 func(fqdn, value string, add bool) error
+	// DNS01 publie et retire le TXT _acme-challenge : zone locale signée de
+	// Rempart, ou hébergeur DNS public par son API (aucun port entrant).
+	DNS01 DNS01Solver
+	// Progress reçoit l'étape en cours (affichée dans l'interface).
+	Progress func(string)
+}
+
+// DNS01Solver publie les TXT du défi dns-01, attend qu'ils soient visibles,
+// puis les retire.
+type DNS01Solver interface {
+	Present(ctx context.Context, fqdn, value string) error
+	CleanUp(ctx context.Context, fqdn, value string) error
+	// Wait attend que les TXT (nom → valeurs) soient servis à l'AC.
+	Wait(ctx context.Context, recs map[string][]string) error
+}
+
+func (o ACMEOptions) say(msg string) {
+	if o.Progress != nil {
+		o.Progress(msg)
+	}
 }
 
 func (m *Manager) client(o ACMEOptions) (*acme.Client, error) {
@@ -149,6 +167,9 @@ func (m *Manager) Obtain(ctx context.Context, o ACMEOptions) (Info, error) {
 		if net.ParseIP(n) != nil {
 			return Info{}, fmt.Errorf("%s : ACME ne certifie ici que des noms DNS", n)
 		}
+		if strings.HasPrefix(n, "*.") && o.Challenge != "dns-01" {
+			return Info{}, fmt.Errorf("%s : un nom joker exige le défi dns-01", n)
+		}
 	}
 	c, err := m.client(o)
 	if err != nil {
@@ -165,6 +186,29 @@ func (m *Manager) Obtain(ctx context.Context, o ACMEOptions) (Info, error) {
 		}
 		defer stop()
 	}
+	if o.Challenge == "dns-01" && o.DNS01 == nil {
+		return Info{}, errors.New("défi dns-01 indisponible")
+	}
+	// Tous les défis sont publiés d'abord, puis on attend une seule fois la
+	// propagation (un nom et son joker partagent le même _acme-challenge).
+	type pending struct {
+		ident string
+		uri   string
+		chal  *acme.Challenge
+	}
+	var todo []pending
+	recs := map[string][]string{}
+	defer func() {
+		// Retrait même si ctx a expiré : le TXT ne doit pas rester publié.
+		cctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		for name, vals := range recs {
+			for _, v := range vals {
+				_ = o.DNS01.CleanUp(cctx, name, v)
+			}
+		}
+	}()
+	o.say("commande auprès de l'AC")
 	for _, zurl := range order.AuthzURLs {
 		z, err := c.GetAuthorization(ctx, zurl)
 		if err != nil {
@@ -191,28 +235,40 @@ func (m *Manager) Obtain(ctx context.Context, o ACMEOptions) (Info, error) {
 			m.http01.Store(chal.Token, resp)
 			defer m.http01.Delete(chal.Token)
 		case "dns-01":
-			if o.DNS01 == nil {
-				return Info{}, errors.New("défi dns-01 indisponible")
-			}
 			rec, err := c.DNS01ChallengeRecord(chal.Token)
 			if err != nil {
 				return Info{}, err
 			}
 			name := "_acme-challenge." + strings.TrimSuffix(z.Identifier.Value, ".") + "."
-			if err := o.DNS01(name, rec, true); err != nil {
+			o.say("publication du TXT " + strings.TrimSuffix(name, "."))
+			if err := o.DNS01.Present(ctx, name, rec); err != nil {
 				return Info{}, err
 			}
-			defer func() { _ = o.DNS01(name, rec, false) }()
+			recs[name] = append(recs[name], rec)
 		default:
 			return Info{}, fmt.Errorf("défi %q non pris en charge", o.Challenge)
 		}
-		if _, err := c.Accept(ctx, chal); err != nil {
-			return Info{}, fmt.Errorf("%s : %w", z.Identifier.Value, err)
+		ident := z.Identifier.Value
+		if z.Wildcard {
+			ident = "*." + ident
 		}
-		if _, err := c.WaitAuthorization(ctx, z.URI); err != nil {
-			return Info{}, fmt.Errorf("%s : validation refusée par l'AC : %w", z.Identifier.Value, err)
+		todo = append(todo, pending{ident, z.URI, chal})
+	}
+	if len(recs) > 0 {
+		if err := o.DNS01.Wait(ctx, recs); err != nil {
+			return Info{}, err
 		}
 	}
+	for _, p := range todo {
+		o.say("validation de " + p.ident + " par l'AC")
+		if _, err := c.Accept(ctx, p.chal); err != nil {
+			return Info{}, fmt.Errorf("%s : %w", p.ident, err)
+		}
+		if _, err := c.WaitAuthorization(ctx, p.uri); err != nil {
+			return Info{}, fmt.Errorf("%s : validation refusée par l'AC : %w", p.ident, err)
+		}
+	}
+	o.say("émission du certificat")
 	ready, err := c.WaitOrder(ctx, order.URI)
 	if err != nil {
 		return Info{}, fmt.Errorf("commande ACME : %w", err)

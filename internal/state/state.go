@@ -181,18 +181,31 @@ type TLSState struct {
 	ACME     ACMEState `json:"acme"`
 }
 
-// ACMEState ne contient aucun secret : la clé de compte est un objet du
-// keystore et la clé HMAC d'EAB n'est utilisée qu'à l'inscription.
+// ACMEState : la clé de compte est un objet du keystore et la clé HMAC
+// d'EAB n'est utilisée qu'à l'inscription. Seuls les identifiants de l'API
+// DNS (DNS) sont des secrets : scellés avec l'état, jamais renvoyés par l'API.
 type ACMEState struct {
 	DirectoryURL string    `json:"directory_url"`
 	Email        string    `json:"email"`
 	Challenge    string    `json:"challenge"` // http-01 | dns-01
+	DNS          ACMEDNS   `json:"dns"`
 	CABundle     string    `json:"ca_bundle,omitempty"`
 	AccountURL   string    `json:"account_url,omitempty"`
 	EABKeyID     string    `json:"eab_key_id,omitempty"`
 	LastAttempt  time.Time `json:"last_attempt"`
 	LastSuccess  time.Time `json:"last_success"`
 	LastError    string    `json:"last_error,omitempty"`
+}
+
+// ACMEDNS : où publier le TXT du défi dns-01.
+type ACMEDNS struct {
+	Provider        string `json:"provider"` // local (zone signée de Rempart) | ovh | cloudflare
+	Zone            string `json:"zone,omitempty"`
+	OVHEndpoint     string `json:"ovh_endpoint,omitempty"` // ovh-eu | ovh-ca | ovh-us
+	OVHAppKey       string `json:"ovh_app_key,omitempty"`
+	OVHAppSecret    string `json:"ovh_app_secret,omitempty"`   // secret
+	OVHConsumerKey  string `json:"ovh_consumer_key,omitempty"` // secret
+	CloudflareToken string `json:"cloudflare_token,omitempty"` // secret
 }
 
 // APIToken : seul le SHA-256 du jeton est conservé ; le jeton (256 bits

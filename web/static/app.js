@@ -2933,7 +2933,8 @@ function showExecute(box, s, op, reload) {
 
 secTabs.tls = async (el) => {
   const t = await api("/tls");
-  const i = t.info, c = t.config, ac = c.acme || {};
+  const i = t.info, c = t.config, ac = c.acme || {}, dn = ac.dns || {}, sec = t.dns_secrets_set || {};
+  const provs = arr(t.dns_providers);
   const left = daysLeft(i.not_after);
   const life = Math.max(1, (new Date(i.not_after) - new Date(i.not_before)) / 86400000);
   const dirs = arr(t.directories);
@@ -2968,18 +2969,45 @@ secTabs.tls = async (el) => {
           <label class="field"><span>Autorité</span><select name="dir" id="acme-dir">${dirs.map((d) => html`<option value="${d.id}" ${selected(known ? known.id === d.id : d.id === "custom" && ac.directory_url)}>${d.name}</option>`)}</select></label>
           <p class="muted small" id="acme-note"></p>
           <label class="field"><span>URL de l'annuaire ACME</span><input name="url" id="acme-url" value="${ac.directory_url || ""}" placeholder="https://…/directory" spellcheck="false"></label>
-          <div class="fields">
-            <label class="field"><span>Adresse de contact</span><input name="email" type="email" value="${ac.email || ""}" placeholder="pki@example.fr"></label>
-            <div class="field"><span>Défi</span><div class="seg" role="radiogroup" aria-label="Défi">
-              <label><input type="radio" name="challenge" value="http-01" ${checked(ac.challenge !== "dns-01")}><span>http-01</span></label>
-              <label><input type="radio" name="challenge" value="dns-01" ${checked(ac.challenge === "dns-01")}><span>dns-01</span></label></div></div>
+          <label class="field"><span>Adresse de contact</span><input name="email" type="email" value="${ac.email || ""}" placeholder="pki@example.fr"></label>
+          <div class="field"><span>Défi</span><div class="seg" role="radiogroup" aria-label="Défi">
+            <label><input type="radio" name="challenge" value="dns-01" ${checked(ac.challenge !== "http-01")}><span>dns-01 : aucun port à ouvrir</span></label>
+            <label><input type="radio" name="challenge" value="http-01" ${checked(ac.challenge === "http-01")}><span>http-01 : port 80</span></label></div></div>
+          <div id="dns01" class="stack-s">
+            <label class="field"><span>Où publier le TXT du défi</span><select name="provider" id="dns-prov">
+              ${provs.map((p) => html`<option value="${p.id}" ${selected(dn.provider === p.id)}>${p.name}</option>`)}
+              <option value="local" ${selected(!dn.provider || dn.provider === "local")}>Zone locale de Rempart (PKI interne)</option></select></label>
+            <p class="muted small" id="dns-note"></p>
+            <div id="dns-public" class="stack-s">
+              <label class="field"><span>Zone DNS publique</span><input name="zone" id="dns-zone" value="${dn.zone || ""}" placeholder="example.fr" spellcheck="false" autocomplete="off">
+                <span class="small">Le domaine tel qu'il apparaît chez l'hébergeur. Les noms du certificat doivent s'y trouver, ou leur <span class="mono">_acme-challenge</span> y être délégué par un CNAME.</span></label>
+              <div id="dns-ovh" class="stack-s">
+                <div class="fields">
+                  <label class="field"><span>Point d'accès</span><select name="ovh_endpoint" id="ovh-ep">
+                    ${[["ovh-eu", "OVHcloud Europe"], ["ovh-ca", "OVHcloud Canada"], ["ovh-us", "OVHcloud US"]].map(([v, l]) => html`<option value="${v}" ${selected((dn.ovh_endpoint || "ovh-eu") === v)}>${l}</option>`)}</select></label>
+                  <label class="field"><span>Clé d'application</span><input name="ovh_app_key" value="${dn.ovh_app_key || ""}" autocomplete="off" spellcheck="false"></label>
+                </div>
+                <div class="fields">
+                  <label class="field"><span>Secret d'application</span><input name="ovh_app_secret" type="password" autocomplete="new-password" placeholder="${sec.ovh_app_secret ? "enregistré : laisser vide pour le garder" : ""}"></label>
+                  <label class="field"><span>Clé consommateur</span><input name="ovh_consumer_key" type="password" autocomplete="new-password" placeholder="${sec.ovh_consumer_key ? "enregistrée : laisser vide pour la garder" : ""}"></label>
+                </div>
+                <p class="small"><a id="ovh-link" target="_blank" rel="noopener noreferrer">Créer les clés OVH</a>, droits préremplis et limités aux enregistrements de la zone : <span class="mono small">GET /domain/zone/&lt;zone&gt;/record*</span>, <span class="mono small">POST …/record</span>, <span class="mono small">POST …/refresh</span>, <span class="mono small">DELETE …/record/*</span>. Choisissez une validité illimitée pour que le renouvellement reste automatique.</p>
+              </div>
+              <div id="dns-cf" class="stack-s">
+                <label class="field"><span>Jeton d'API</span><input name="cloudflare_token" type="password" autocomplete="new-password" placeholder="${sec.cloudflare_token ? "enregistré : laisser vide pour le garder" : ""}"></label>
+                <p class="small"><a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noopener noreferrer">Créer un jeton Cloudflare</a> (modèle « Edit zone DNS ») : droits Zone → Zone → Read et Zone → DNS → Edit, ressource limitée à la zone. Jamais la clé globale.</p>
+              </div>
+              <p class="muted small">Les identifiants sont scellés avec l'état et ne sont plus jamais affichés. Rempart n'émet que des requêtes sortantes : l'API de l'hébergeur, puis les serveurs DNS de la zone pour vérifier la propagation avant de laisser l'AC valider. Aucun port à ouvrir sur la box, et les noms joker (<span class="mono">*.dns.example.fr</span>) deviennent possibles.</p>
+              <details><summary>Limiter les droits : déléguer <span class="mono">_acme-challenge</span></summary>
+                <p class="small">Créez une petite zone dédiée (par exemple <span class="mono">acme.example.fr</span>), puis dans la zone principale un CNAME <span class="mono">_acme-challenge.dns.example.fr → _acme-challenge.acme.example.fr</span>. Indiquez ici la zone dédiée : Rempart suit le CNAME, et une clé volée ne peut modifier que cette zone.</p></details>
+            </div>
           </div>
-          <p class="muted small">http-01 : l'AC contacte Rempart sur ${t.http01_listen || ":80"} pendant la validation. dns-01 : Rempart publie lui-même le TXT dans votre zone locale signée ; l'AC doit interroger Rempart pour ce nom (PKI interne).</p>
+          <p class="muted small" id="http01-note">http-01 : l'AC contacte Rempart depuis Internet sur ${t.http01_listen || ":80"} pendant la validation. Il faut publier le port 80 du conteneur et le rediriger sur la box. Les noms joker sont impossibles.</p>
           <details ${ac.ca_bundle ? new Raw("open") : ""}><summary>AC interne : certificats de confiance</summary>
             <label class="field"><span>AC racine et intermédiaires (PEM)</span><textarea class="short" name="ca" spellcheck="false" placeholder="-----BEGIN CERTIFICATE-----">${ac.ca_bundle || ""}</textarea>
             <span class="small">Pour joindre une AC dont le certificat n'est pas reconnu par le système, sans jamais désactiver la vérification TLS.</span></label>
           </details>
-          <div><button type="submit">Enregistrer</button></div>
+          <div class="row"><button type="submit">Enregistrer</button><button type="button" id="dns-test">Tester l'accès à l'API DNS</button></div>
         </form>
         <hr>
         <div class="stack-s">
@@ -2995,8 +3023,9 @@ secTabs.tls = async (el) => {
           </form>
         </div>
         <hr>
-        <div class="row"><button class="primary" id="acme-issue" ${ac.account_url ? "" : new Raw("disabled")}>${icon("cert")}Obtenir le certificat maintenant</button>
+        <div class="row"><button class="primary" id="acme-issue" ${ac.account_url && !t.issuing ? "" : new Raw("disabled")}>${icon("cert")}Obtenir le certificat maintenant</button>
           <span class="muted small">Renouvellement automatique au dernier tiers de la validité.</span></div>
+        <p class="small" id="acme-progress" role="status" aria-live="polite">${t.issuing ? `En cours : ${t.issuing_step || "…"}` : ""}</p>
         ${ac.last_error ? notice("bad", html`<p><b>Dernière tentative le ${date(ac.last_attempt)} :</b> ${ac.last_error}</p>`) : isSet(ac.last_success) ? notice("good", html`<p>Dernier certificat obtenu le ${date(ac.last_success)}.</p>`) : ""}
       </div>
       <div id="how-csr" class="stack" hidden>
@@ -3026,9 +3055,38 @@ secTabs.tls = async (el) => {
   };
   dirSel.onchange = () => syncDir(true);
   syncDir(!$("#acme-url").value);
+  const cfgForm = $("#acme-cfg");
+  const zoneGuess = () => { const n = names().map((x) => x.replace(/^\*\./, "")).find((x) => x.split(".").length >= 2); return n ? n.split(".").slice(-2).join(".") : ""; };
+  const syncDNS = () => {
+    const f = cfgForm, dns01 = f.challenge.value === "dns-01", prov = f.provider.value;
+    $("#dns01").hidden = !dns01;
+    $("#http01-note").hidden = dns01;
+    $("#dns-public").hidden = prov === "local";
+    $("#dns-ovh").hidden = prov !== "ovh";
+    $("#dns-cf").hidden = prov !== "cloudflare";
+    $("#dns-test").hidden = !dns01 || prov === "local";
+    const p = provs.find((x) => x.id === prov);
+    $("#dns-note").textContent = p ? p.note : "Le TXT est publié dans une zone locale signée de Rempart : seulement pour une AC interne qui interroge Rempart. Let's Encrypt ne la voit pas.";
+    if (prov !== "local" && !f.zone.value) f.zone.placeholder = zoneGuess() || "example.fr";
+    const z = (f.zone.value.trim() || zoneGuess()).toLowerCase().replace(/\.$/, "");
+    const host = { "ovh-eu": "https://eu.api.ovh.com", "ovh-ca": "https://ca.api.ovh.com", "ovh-us": "https://api.us.ovhcloud.com" }[f.ovh_endpoint.value];
+    const zp = "/domain/zone/" + z;
+    $("#ovh-link").href = /^[a-z0-9.-]+\.[a-z0-9-]+$/.test(z) ? `${host}/createToken/?GET=${zp}/record*&POST=${zp}/record&POST=${zp}/refresh&DELETE=${zp}/record/*` : `${host}/createToken/`;
+  };
+  $$("[name=challenge], #dns-prov, #ovh-ep", cfgForm).forEach((x) => (x.onchange = syncDNS));
+  cfgForm.zone.oninput = syncDNS;
+  syncDNS();
   const saveCfg = (btn) => {
-    const f = $("#acme-cfg");
-    return act(btn, () => api("/tls/config", { method: "PUT", body: { names: names(), acme: { directory_url: f.url.value.trim(), email: f.email.value.trim(), challenge: f.challenge.value, ca_bundle: f.ca.value } } }), "Configuration enregistrée");
+    const f = cfgForm;
+    const dns = { provider: f.provider.value, zone: f.zone.value.trim() || (f.provider.value !== "local" ? zoneGuess() : ""), ovh_endpoint: f.ovh_endpoint.value, ovh_app_key: f.ovh_app_key.value.trim(),
+      ovh_app_secret: f.ovh_app_secret.value.trim(), ovh_consumer_key: f.ovh_consumer_key.value.trim(), cloudflare_token: f.cloudflare_token.value.trim() };
+    return act(btn, () => api("/tls/config", { method: "PUT", body: { names: names(), acme: { directory_url: f.url.value.trim(), email: f.email.value.trim(), challenge: f.challenge.value, ca_bundle: f.ca.value, dns } } }), "Configuration enregistrée")
+      .then((r) => { if (r) for (const k of ["ovh_app_secret", "ovh_consumer_key", "cloudflare_token"]) f[k].value = ""; return r; });
+  };
+  $("#dns-test").onclick = async (e) => {
+    const btn = e.currentTarget;
+    if (!(await saveCfg(null))) return;
+    act(btn, () => api("/tls/acme/dns-test", { method: "POST" })).then((r) => r && toast(`Accès vérifié : TXT publié puis retiré sur ${r.name}`));
   };
   $("#acme-cfg").onsubmit = (e) => { e.preventDefault(); saveCfg(e.submitter).then((r) => r && reload()); };
   $("#acme-reg").onsubmit = async (e) => {
@@ -3039,7 +3097,32 @@ secTabs.tls = async (el) => {
     if (!(await saveCfg(null))) return;
     act(e.submitter, () => api("/tls/acme/register", { method: "POST", body }), "Compte ACME inscrit").then((r) => r && reload());
   };
-  $("#acme-issue").onclick = (e) => act(e.currentTarget, () => api("/tls/acme/issue", { method: "POST" }), "Certificat obtenu et mis en service").then(reload);
+  // La demande tourne en arrière-plan (la propagation DNS peut prendre
+  // quelques minutes) : on suit son étape jusqu'au résultat.
+  const follow = async () => {
+    for (;;) {
+      await new Promise((r) => setTimeout(r, 2000));
+      if (!el.isConnected) return;
+      let st;
+      try { st = await api("/tls"); } catch { return; }
+      if (!st.issuing) {
+        const a = st.config?.acme || {};
+        if (a.last_error) toast(a.last_error, true); else toast("Certificat obtenu et mis en service");
+        return reload();
+      }
+      const pr = $("#acme-progress");
+      if (pr) pr.textContent = `En cours : ${st.issuing_step || "…"}`;
+    }
+  };
+  $("#acme-issue").onclick = async (e) => {
+    const btn = e.currentTarget;
+    const r = await act(btn, () => api("/tls/acme/issue", { method: "POST" }));
+    if (!r) return;
+    btn.disabled = true;
+    $("#acme-progress").textContent = `En cours : ${r.issuing_step || "démarrage"}`;
+    follow();
+  };
+  if (t.issuing) follow();
   $("#csr-gen").onclick = async (e) => {
     const r = await act(e.currentTarget, () => api("/tls/csr", { method: "POST", body: { names: names() } }));
     if (!r) return;

@@ -5268,7 +5268,7 @@
           "Certificat (interface, DoT, DoH)"
         ],
         "summary": "Noms et réglages ACME",
-        "description": "Portée : tls — Certificat de l'interface, de DoT et de DoH. Jeton « tls » ou « admin ».",
+        "description": "Les secrets de l'API DNS (ovh_app_secret, ovh_consumer_key, cloudflare_token) ne sont jamais renvoyés : laissés vides, ils sont gardés tant que le fournisseur, la zone et le compte ne changent pas.\n\nPortée : tls — Certificat de l'interface, de DoT et de DoH. Jeton « tls » ou « admin ».",
         "operationId": "put_api_tls_config",
         "x-rempart-scope": "tls",
         "parameters": [],
@@ -5328,6 +5328,29 @@
                       },
                       "ca_bundle": {
                         "type": "string"
+                      },
+                      "dns": {
+                        "type": "object",
+                        "properties": {
+                          "provider": {
+                            "type": "string"
+                          },
+                          "zone": {
+                            "type": "string"
+                          },
+                          "ovh_endpoint": {
+                            "type": "string"
+                          },
+                          "ovh_app_key": {
+                            "type": "string"
+                          },
+                          "ovh_app_secret": {
+                            "type": "string"
+                          },
+                          "ovh_consumer_key": {
+                            "type": "string"
+                          }
+                        }
                       }
                     }
                   }
@@ -5335,13 +5358,22 @@
               },
               "example": {
                 "names": [
-                  "rempart.maison.example"
+                  "dns.maison.example",
+                  "*.dns.maison.example"
                 ],
                 "acme": {
                   "directory_url": "https://acme-v02.api.letsencrypt.org/directory",
                   "email": "admin@maison.example",
-                  "challenge": "http-01",
-                  "ca_bundle": ""
+                  "challenge": "dns-01",
+                  "ca_bundle": "",
+                  "dns": {
+                    "provider": "ovh",
+                    "zone": "maison.example",
+                    "ovh_endpoint": "ovh-eu",
+                    "ovh_app_key": "…",
+                    "ovh_app_secret": "…",
+                    "ovh_consumer_key": "…"
+                  }
                 }
               }
             }
@@ -5416,13 +5448,62 @@
         }
       }
     },
+    "/api/tls/acme/dns-test": {
+      "post": {
+        "tags": [
+          "Certificat (interface, DoT, DoH)"
+        ],
+        "summary": "Tester l'accès à l'API DNS",
+        "description": "Publie puis retire un TXT de test chez l'hébergeur avec la configuration enregistrée, sans solliciter l'AC.\n\nPortée : tls — Certificat de l'interface, de DoT et de DoH. Jeton « tls » ou « admin ».",
+        "operationId": "post_api_tls_acme_dns_test",
+        "x-rempart-scope": "tls",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Succès",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "name": "_acme-challenge.dns.maison.example"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/tls/acme/issue": {
       "post": {
         "tags": [
           "Certificat (interface, DoT, DoH)"
         ],
         "summary": "Obtenir le certificat par ACME maintenant",
-        "description": "Portée : tls — Certificat de l'interface, de DoT et de DoH. Jeton « tls » ou « admin ».",
+        "description": "Répond 202 et travaille en arrière-plan (attente de la propagation DNS comprise) ; 409 si une demande est en cours. Suivez issuing et issuing_step dans GET /api/tls, puis config.acme.last_error ou last_success.\n\nPortée : tls — Certificat de l'interface, de DoT et de DoH. Jeton « tls » ou « admin ».",
         "operationId": "post_api_tls_acme_issue",
         "x-rempart-scope": "tls",
         "parameters": [],

@@ -19,8 +19,9 @@ Ports utilisés sur la machine :
 | 53 UDP et TCP | DNS |
 | 853 TCP et UDP | DNS-over-TLS, DNS-over-QUIC |
 | 443 TCP | DNS-over-HTTPS |
-| 80 TCP | HTTP : défi ACME http-01, ouvert seulement pendant l'obtention d'un certificat |
 | 127.0.0.1:8080 | interface d'administration, accessible depuis la machine elle-même |
+
+Aucun port n'est à ouvrir sur la box : le certificat Let's Encrypt s'obtient par le défi dns-01 chez votre hébergeur DNS (OVHcloud, Cloudflare), par des requêtes sortantes seulement. Le port 80 n'est utile qu'au défi http-01 : décommentez-le dans `docker-compose.yml` ou l'unité Quadlet si vous le choisissez.
 
 Si l'un de ces ports est déjà pris, l'installeur s'arrête et nomme le programme qui l'occupe. Causes fréquentes du port 53 occupé :
 - Linux : systemd-resolved. Mettez `DNSStubListener=no` dans `/etc/systemd/resolved.conf`, puis `systemctl restart systemd-resolved`.

@@ -69,10 +69,10 @@ if ($Port -lt 1 -or $Port -gt 65535) { Die "-WebPort : entre 1 et 65535" }
 if (@(53, 853, 443, 80) -contains $Port) { Die "-WebPort $Port : déjà utilisé par le DNS. Pour l'interface sur 443 : Réglages → Chiffrement, « Interface aussi sur le port DoH »" }
 
 # ---- ports ----
-# Ports standard, fixes : DNS 53, DoT/DoQ 853, DoH 443, HTTP 80 (ACME) ; interface au choix.
+# Ports standard, fixes : DNS 53, DoT/DoQ 853, DoH 443 ; interface au choix. Port 80 (défi http-01) non publié par défaut.
 Quiet { & $Engine rm -f $Container }   # une version déjà lancée occupe ses propres ports
 $busy = @()
-foreach ($p in 53, 853, 443, 80, $Port) {
+foreach ($p in 53, 853, 443, $Port) {
   $tcp = Get-NetTCPConnection -State Listen -LocalPort $p -ErrorAction SilentlyContinue
   $udp = Get-NetUDPEndpoint -LocalPort $p -ErrorAction SilentlyContinue
   foreach ($e in @($tcp) + @($udp)) {

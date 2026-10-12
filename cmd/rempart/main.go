@@ -587,7 +587,10 @@ func migrateState(s *state.State, cfg *config.Config) {
 		s.TLS.Names = append([]string{}, cfg.TLS.SelfSignedNames...)
 	}
 	if s.TLS.ACME.Challenge == "" {
-		s.TLS.ACME.Challenge = "http-01"
+		s.TLS.ACME.Challenge = "dns-01" // aucun port à ouvrir
+	}
+	if s.TLS.ACME.DNS.Provider == "" {
+		s.TLS.ACME.DNS.Provider = "local"
 	}
 	for i := range s.Zones {
 		zones.Normalize(&s.Zones[i], time.Now().UTC())
@@ -606,9 +609,9 @@ func background(ctx context.Context, log *slog.Logger, a *api.API, zm *zones.Man
 		if store.Get().TLS.Mode != "acme" || tm.Locked() || !tm.NeedsRenewal(time.Now()) {
 			return
 		}
-		rctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+		rctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 		defer cancel()
-		if err := a.IssueCertificate(rctx, "système"); err != nil {
+		if err := a.RenewCertificate(rctx); err != nil {
 			log.Error("renouvellement ACME", "err", err)
 		}
 	}
