@@ -99,6 +99,10 @@ git pull
 
 L'image est reconstruite et le conteneur recréé. Les secrets et les données sont gardés, rien n'est redemandé.
 
+La nouvelle image est construite pendant que l'ancienne version tourne encore : c'est important quand Rempart est le DNS de la machine elle-même, car sans lui Docker ne peut plus télécharger les images de base. Si une étape échoue après l'arrêt de l'ancienne version, l'installeur la relance.
+
+Avec Docker, lancez le script avec `sudo`, ou ajoutez votre compte au groupe `docker` (`sudo usermod -aG docker $USER`, puis reconnectez-vous). Ce groupe donne l'équivalent des droits root sur la machine.
+
 ## 5. Reprendre une installation faite avec l'ancien dossier `secrets/`
 
 Lancez l'installeur dans le dossier qui contient encore `secrets/`. Il fait passer `secrets/keystore_passphrase.txt` au conteneur par l'entrée standard, démarre Rempart sur les données existantes, puis propose de supprimer `secrets/`. Supprimez aussi les copies éventuelles de ce dossier : sauvegardes, archives, corbeille.

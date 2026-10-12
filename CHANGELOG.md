@@ -11,6 +11,7 @@
 - Tous les défis d'une commande sont publiés d'abord ; la propagation n'est attendue qu'une fois (un nom et son joker partagent le même TXT). Si aucun serveur de la zone ne répond (DNS sortant filtré), Rempart attend 90 s puis laisse l'AC essayer.
 - `POST /api/tls/acme/issue` répond désormais **202** et travaille en arrière-plan (409 si une demande est en cours) : l'attente de la propagation dépassait la durée d'une requête HTTP. `GET /api/tls` donne `issuing` et `issuing_step`, et l'interface affiche l'étape en cours. Le renouvellement automatique dispose de 10 minutes.
 - Nouveau `POST /api/tls/acme/dns-test` : publie puis retire un TXT de test chez l'hébergeur, sans solliciter l'AC ni ses limites de débit.
+- **Installeur : la mise à jour ne coupe plus le DNS avant la fin de la construction.** L'image est construite pendant que l'ancienne version tourne encore. Avant, l'installeur arrêtait d'abord le conteneur : si Rempart était le DNS de la machine, la construction ne pouvait plus télécharger les images de base, et le réseau restait sans DNS. Si une étape échoue après l'arrêt, l'ancienne version est relancée (`install.sh` et `install.ps1`).
 - **Le port 80 n'est plus publié** par `docker-compose.yml`, `docker-compose.hsm.yml` ni l'unité Quadlet, et l'installeur ne le vérifie plus. Décommentez-le seulement pour le défi http-01. dns-01 devient le défi par défaut des nouvelles installations ; une installation existante garde son choix.
 
 ## 1.1.0 — 2026-10-06

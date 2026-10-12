@@ -15,7 +15,17 @@ param(
 $ErrorActionPreference = "Stop"
 Set-Location (Join-Path $PSScriptRoot "..")
 
-function Die([string]$m) { Write-Host "ERREUR : $m" -ForegroundColor Red; exit 1 }
+$script:Stopped = $false; $script:Started = $false
+function Die([string]$m) {
+  Write-Host "ERREUR : $m" -ForegroundColor Red
+  # La version précédente, arrêtée pour libérer ses ports, est relancée :
+  # le réseau ne reste pas sans DNS.
+  if ($script:Stopped -and -not $script:Started) {
+    Write-Host "Relance de la version précédente de Rempart." -ForegroundColor Yellow
+    Quiet { & $Engine start $Container }
+  }
+  exit 1
+}
 function Say([string]$m) { Write-Host "`n== $m" -ForegroundColor Cyan }
 # Les commandes natives ne lèvent pas d'exception : on contrôle leur code de sortie.
 function Check([string]$what) { if ($LASTEXITCODE -ne 0) { Die "$what (code $LASTEXITCODE)" } }
@@ -68,9 +78,24 @@ if ($WebLocal) { $WebBind = "127.0.0.1" }
 if ($Port -lt 1 -or $Port -gt 65535) { Die "-WebPort : entre 1 et 65535" }
 if (@(53, 853, 443, 80) -contains $Port) { Die "-WebPort $Port : déjà utilisé par le DNS. Pour l'interface sur 443 : Réglages → Chiffrement, « Interface aussi sur le port DoH »" }
 
+# ---- image ----
+# Construite AVANT d'arrêter la version en service : Rempart est souvent le
+# DNS de la machine, et sans lui le téléchargement des images de base échoue.
+if (-not $NoBuild) {
+  Say "Construction de l'image $Image"
+  & $Engine build --target $Target -t $Image .
+  Check "construction de l'image"
+} else {
+  Quiet { & $Engine image inspect $Image }
+  if ($LASTEXITCODE -ne 0) { Die "image $Image absente (-NoBuild)" }
+}
+
 # ---- ports ----
 # Ports standard, fixes : DNS 53, DoT/DoQ 853, DoH 443 ; interface au choix. Port 80 (défi http-01) non publié par défaut.
-Quiet { & $Engine rm -f $Container }   # une version déjà lancée occupe ses propres ports
+# Une version déjà lancée occupe ses propres ports : on l'arrête (relancée par Die en cas d'échec).
+$old = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { $running = & $Engine inspect -f '{{.State.Running}}' $Container 2>$null } finally { $ErrorActionPreference = $old }
+if ($running -eq "true") { Quiet { & $Engine stop $Container }; $script:Stopped = $true }
 $busy = @()
 foreach ($p in 53, 853, 443, $Port) {
   $tcp = Get-NetTCPConnection -State Listen -LocalPort $p -ErrorAction SilentlyContinue
@@ -87,16 +112,6 @@ if ($busy.Count -gt 0) {
   $busy | Sort-Object -Unique | ForEach-Object { Write-Host $_ }
   Write-Host "Port 53 : souvent le partage de connexion Internet (service SharedAccess) ou le proxy DNS de Hyper-V/WSL."
   Die "libérez ces ports puis relancez le script"
-}
-
-# ---- image ----
-if (-not $NoBuild) {
-  Say "Construction de l'image $Image"
-  & $Engine build --target $Target -t $Image .
-  Check "construction de l'image"
-} else {
-  Quiet { & $Engine image inspect $Image }
-  if ($LASTEXITCODE -ne 0) { Die "image $Image absente (-NoBuild)" }
 }
 
 # ---- secrets ----
@@ -128,6 +143,7 @@ Say "Démarrage"
 $cexe = $Compose[0]; $cargs = @($Compose | Select-Object -Skip 1) + @("-f", $File, "up", "-d")
 & $cexe @cargs
 Check "démarrage par compose"
+$script:Started = $true
 
 # ---- effacement du mot de passe initial ----
 # Une fois l'état scellé créé, le mot de passe y est haché : le fichier ne sert plus.

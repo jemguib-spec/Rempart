@@ -89,6 +89,17 @@ if [ "$QUADLET" = 0 ]; then
   else die "aucun outil compose trouvé pour $ENGINE (docker compose, podman-compose)"; fi
 fi
 
+# ---- image ----
+# Construite AVANT d'arrêter la version en service : Rempart est souvent le
+# DNS de la machine elle-même, et sans lui le téléchargement des images de
+# base échoue. Un échec de construction laisse l'ancienne version tourner.
+if [ "$BUILD" = 1 ]; then
+  say "Construction de l'image $IMAGE"
+  "$ENGINE" build --target "$TARGET" -t "$IMAGE" .
+else
+  "$ENGINE" image inspect "$IMAGE" >/dev/null 2>&1 || die "image $IMAGE absente (--no-build)"
+fi
+
 # ---- ports ----
 # Ports standard, fixes : DNS 53, DoT/DoQ 853, DoH 443 ; interface au choix (8080 par défaut). Port 80 (défi http-01) non publié par défaut.
 PORTS="53 853 443 $WEB_PORT"
@@ -101,12 +112,25 @@ port_busy() {
     return 1
   fi
 }
-# Une version de Rempart déjà lancée occupe ses propres ports : on l'arrête avant de vérifier.
+# Une version de Rempart déjà lancée occupe ses propres ports : on l'arrête
+# avant de vérifier. Si le script échoue ensuite, elle est relancée : le
+# réseau ne reste pas sans DNS.
+STOPPED=0; STARTED=0
 if [ "$QUADLET" = 1 ]; then
-  if [ "$(id -u)" = 0 ]; then systemctl stop rempart 2>/dev/null || true; else systemctl --user stop rempart 2>/dev/null || true; fi
+  if [ "$(id -u)" = 0 ]; then SCTL="systemctl"; else SCTL="systemctl --user"; fi
+  $SCTL is-active --quiet rempart 2>/dev/null && { $SCTL stop rempart; STOPPED=1; }
 else
-  "$ENGINE" rm -f "$CONTAINER" >/dev/null 2>&1 || true
+  [ "$("$ENGINE" inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null)" = true ] && { "$ENGINE" stop "$CONTAINER" >/dev/null; STOPPED=1; }
 fi
+restore() {
+  rc=$?
+  if [ "$rc" -ne 0 ] && [ "$STOPPED" = 1 ] && [ "$STARTED" = 0 ]; then
+    echo "Échec : relance de la version précédente de Rempart." >&2
+    if [ "$QUADLET" = 1 ]; then $SCTL start rempart || true; else "$ENGINE" start "$CONTAINER" >/dev/null || true; fi
+  fi
+}
+trap restore EXIT
+trap 'exit 130' INT TERM
 busy=""
 for p in $PORTS; do port_busy "$p" && busy="$busy $p"; done
 if [ -n "$busy" ]; then
@@ -118,14 +142,6 @@ fi
 if [ "$ENGINE" = podman ] && [ "$(uname -s)" = Linux ] && [ "$(podman info --format '{{.Host.Security.Rootless}}')" = true ]; then
   start=$(sysctl -n net.ipv4.ip_unprivileged_port_start 2>/dev/null || echo 1024)
   [ "$start" -le 53 ] || die "Podman sans root ne peut pas ouvrir les ports sous $start : sudo sysctl -w net.ipv4.ip_unprivileged_port_start=53 (et dans /etc/sysctl.d/ pour le garder)"
-fi
-
-# ---- image ----
-if [ "$BUILD" = 1 ]; then
-  say "Construction de l'image $IMAGE"
-  "$ENGINE" build --target "$TARGET" -t "$IMAGE" .
-else
-  "$ENGINE" image inspect "$IMAGE" >/dev/null 2>&1 || die "image $IMAGE absente (--no-build)"
 fi
 
 # ---- secrets ----
@@ -162,9 +178,11 @@ else
   # Réglages propres à la machine (adresse d'écoute de l'interface…) : fichier
   # local non versionné, chargé après le fichier du dépôt.
   OVERRIDE=""; [ "$SOFTHSM" = 0 ] && [ -f docker-compose.override.yml ] && OVERRIDE="-f docker-compose.override.yml"
+  # Compose recrée le conteneur arrêté plus haut avec la nouvelle image.
   # shellcheck disable=SC2086
   $COMPOSE -f "$FILE" $OVERRIDE up -d
 fi
+STARTED=1
 
 # ---- effacement du mot de passe initial ----
 # Une fois l'état scellé créé, le mot de passe y est haché : le fichier ne sert plus.
