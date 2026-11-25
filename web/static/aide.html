@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
+<script src="theme.js"></script>
 <title>Aide Rempart</title>
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="docs.css">
@@ -17,7 +18,7 @@
     <a href="/">Interface</a>
     <a href="aide.html" aria-current="page">Aide</a>
     <a href="api.html">API</a>
-    <button type="button" id="theme">Thème</button>
+    <button type="button" data-theme-toggle><span data-theme-label>Thème sombre</span></button>
   </nav>
 </header>
 <div class="layout">
@@ -68,7 +69,7 @@ powershell -ExecutionPolicy Bypass -File scripts\install.ps1   # Windows</code><
     <div class="callout warn"><div><b class="t">Limite du filtrage DNS</b>Un appareil qui utilise son propre résolveur chiffré, un VPN ou un relais (iCloud Private Relay…) échappe au filtrage. La catégorie « Contournement » bloque les plus connus ; pour une garantie, interdisez au pare-feu tout DNS sortant autre que Rempart.</div></div>
 
     <h3 id="interface">L'interface en un coup d'œil</h3>
-    <div class="table-wrap"><table>
+    <div class="table-wrap"><table><caption class="visually-hidden">Pages de l'interface</caption>
       <thead><tr><th>Menu</th><th>Contenu</th></tr></thead>
       <tbody>
         <tr><td>Tableau de bord</td><td>Requêtes, part bloquée, domaines les plus bloqués, état des résolveurs, du certificat et des clés.</td></tr>
@@ -80,13 +81,13 @@ powershell -ExecutionPolicy Bypass -File scripts\install.ps1   # Windows</code><
         <tr><td>Réglages</td><td>Général, blocage, confidentialité, résolution DNS, chiffrement, exploitation (réplication, syslog, sauvegarde).</td></tr>
       </tbody>
     </table></div>
-    <p>Sur téléphone, les quatre premiers menus sont en bas de l'écran, les autres derrière « Plus ». Le thème clair ou sombre suit le système, ou votre choix (bouton « Changer de thème »).</p>
+    <p>Sur téléphone, les quatre premiers menus sont en bas de l'écran, les autres derrière « Plus ». Le thème clair ou sombre suit le système ; le bouton « Thème sombre » ou « Thème clair » passe à l'autre, et le même bouton revient ensuite au réglage du système.</p>
 
     <!-- ================================================================= -->
     <h2 id="tableau">Tableau de bord et journal</h2>
     <p>Le tableau de bord résume l'activité depuis le dernier démarrage. Les statistiques restent en mémoire et repartent de zéro à chaque redémarrage : c'est un choix de confidentialité.</p>
     <p>Deux vues : <b>Essentiel</b> (chiffres clés, activité, motifs de blocage, rythme de la semaine, points à vérifier) et <b>Complet</b> (en plus : transports chiffrés ou non, types de requêtes, codes de réponse, temps de réponse, état de chaque composant). La vue complète s'ouvre d'office quand l'instance a des zones, des flux RPZ, une réplication ou une copie vers un SIEM ; le choix est retenu par le navigateur.</p>
-    <div class="table-wrap"><table>
+    <div class="table-wrap"><table><caption class="visually-hidden">Données gardées selon le mode de journal</caption>
       <thead><tr><th>Donnée</th><th>Aucun journal</th><th>Statistiques anonymes</th><th>Journal complet</th></tr></thead>
       <tbody>
         <tr><td>Activité sur 1 h, 24 h, 7 jours ; rythme de la semaine</td><td>oui</td><td>oui</td><td>oui</td></tr>
@@ -101,7 +102,7 @@ powershell -ExecutionPolicy Bypass -File scripts\install.ps1   # Windows</code><
     <p>Les compteurs disponibles sans journal ne portent ni domaine ni appareil : un journal désactivé n'empêche pas de voir que le filtrage fonctionne. Passer à un mode plus strict efface aussitôt de la mémoire ce que ce mode ne garde pas.</p>
     <h3 id="journal">Journal des requêtes</h3>
     <p>Ce que le journal contient dépend du mode choisi dans <a href="#confidentialite">Réglages → Confidentialité</a> :</p>
-    <div class="table-wrap"><table>
+    <div class="table-wrap"><table><caption class="visually-hidden">Contenu du journal des requêtes</caption>
       <thead><tr><th>Mode</th><th>Ce qui est gardé</th></tr></thead>
       <tbody>
         <tr><td>Aucun journal</td><td>Des compteurs anonymes, rien d'autre.</td></tr>
@@ -148,7 +149,7 @@ powershell -ExecutionPolicy Bypass -File scripts\install.ps1   # Windows</code><
 
     <h3 id="groupes">Groupes et contrôle parental</h3>
     <p>Appareils → Groupes. Un groupe réunit des appareils, désignés par adresse IP, réseau CIDR, adresse MAC ou profil, et leur applique sa propre politique. Un appareil hors de tout groupe suit la politique générale. Un appareil n'appartient qu'à un groupe ; les réseaux peuvent se recouvrir, le plus précis l'emporte.</p>
-    <div class="table-wrap"><table>
+    <div class="table-wrap"><table><caption class="visually-hidden">Réglages d'un groupe</caption>
       <thead><tr><th>Élément</th><th>Effet</th></tr></thead>
       <tbody>
         <tr><td>Listes</td><td>Celles actives partout (option), plus des listes propres au groupe.</td></tr>
@@ -225,7 +226,7 @@ powershell -ExecutionPolicy Bypass -File scripts\install.ps1   # Windows</code><
 
     <h3 id="comptes">Comptes d'entreprise : LDAP et OIDC</h3>
     <p>Sécurité → Comptes et annuaires. Les administrateurs se connectent avec leur compte Active Directory, OpenLDAP, FreeIPA, ou par OpenID Connect (Keycloak, Entra ID, Authentik, Okta). Leur rôle découle de leurs groupes, relus à chaque connexion :</p>
-    <div class="table-wrap"><table>
+    <div class="table-wrap"><table><caption class="visually-hidden">Rôles des comptes d'entreprise</caption>
       <thead><tr><th>Rôle</th><th>Droits</th></tr></thead>
       <tbody>
         <tr><td>Administrateur</td><td>Tout : clés et HSM, quorum, jetons d'API, comptes externes.</td></tr>
@@ -237,7 +238,7 @@ powershell -ExecutionPolicy Bypass -File scripts\install.ps1   # Windows</code><
 
     <h3 id="jetons">Jetons d'API</h3>
     <p>Sécurité → Accès API crée des jetons pour vos scripts, Prometheus, la sauvegarde ou une autre instance. Le jeton (<code>rmp_…</code>) n'est montré qu'une fois. Choisissez la portée la plus étroite qui suffit :</p>
-    <div class="table-wrap"><table>
+    <div class="table-wrap"><table><caption class="visually-hidden">Portées des jetons d'API</caption>
       <thead><tr><th>Portée</th><th>Permet</th><th>Exemple d'usage</th></tr></thead>
       <tbody>
         <tr><td><code>read</code></td><td>Consulter état, journal récent, configuration.</td><td>Tableau de bord externe</td></tr>
@@ -279,7 +280,7 @@ powershell -ExecutionPolicy Bypass -File scripts\install.ps1   # Windows</code><
     <!-- ================================================================= -->
     <h2 id="reglages">Réglages</h2>
     <h3 id="general">Général et blocage</h3>
-    <div class="table-wrap"><table>
+    <div class="table-wrap"><table><caption class="visually-hidden">Réglages généraux et blocage</caption>
       <thead><tr><th>Réglage</th><th>Valeurs</th><th>Conseil</th></tr></thead>
       <tbody>
         <tr><td>Réponse aux domaines bloqués</td><td>0.0.0.0 (zero), NXDOMAIN, REFUSED</td><td>0.0.0.0 : les applications abandonnent vite, sans réessayer.</td></tr>
@@ -330,7 +331,7 @@ time() - rempart_replication_last_sync_timestamp_seconds &gt; 300</code></pre>
     <h3 id="auth-api">Deux façons de s'authentifier</h3>
     <ul>
       <li><b>Jeton porteur</b> : en-tête <code>Authorization: Bearer rmp_…</code>. Pour les scripts. Pas besoin d'en-tête supplémentaire.</li>
-      <li><b>Session</b> : <code>POST /api/login</code> pose le cookie <code>rempart_session</code>. Toute requête qui modifie quelque chose doit alors porter <code>X-Rempart: 1</code> (protection contre les requêtes forgées depuis un autre site). Une session d'administrateur donne accès à <b>toutes</b> les commandes, y compris la création de jetons.</li>
+      <li><b>Session</b> : <code>POST /api/login</code> pose le cookie de session (<code>__Host-rempart_session</code> en HTTPS, <code>rempart_session</code> en HTTP). Toute requête qui modifie quelque chose doit alors porter <code>X-Rempart: 1</code> (protection contre les requêtes forgées depuis un autre site). Une session d'administrateur donne accès à <b>toutes</b> les commandes, y compris la création de jetons.</li>
     </ul>
 
     <h3 id="token-install">Créer un jeton avec un compte administrateur (installation automatisée)</h3>
@@ -351,7 +352,7 @@ curl -sS -H @/etc/rempart/api.auth --cacert ac.pem -H 'Content-Type: application
     <div class="callout good"><div><b class="t">Bonnes pratiques</b>Donnez au jeton d'installation une durée courte (1 jour) et révoquez-le à la fin ; créez ensuite des jetons dédiés et étroits pour l'exploitation (<code>metrics</code>, <code>backup</code>). Gardez-les dans des fichiers en 0600 et passez-les par <code>curl -H @fichier</code>. Comptes OIDC : la connexion passe par le navigateur ; pour un script, utilisez le compte local ou un compte LDAP.</div></div>
 
     <h3 id="cli">Ligne de commande</h3>
-    <div class="table-wrap"><table>
+    <div class="table-wrap"><table><caption class="visually-hidden">Commandes de la ligne de commande</caption>
       <thead><tr><th>Commande</th><th>Rôle</th></tr></thead>
       <tbody>
         <tr><td><code>rempart -config rempart.yaml</code></td><td>Démarre le serveur.</td></tr>
@@ -367,7 +368,7 @@ curl -sS -H @/etc/rempart/api.auth --cacert ac.pem -H 'Content-Type: application
       </tbody>
     </table></div>
     <h3 id="env">Variables d'environnement</h3>
-    <div class="table-wrap"><table>
+    <div class="table-wrap"><table><caption class="visually-hidden">Variables d'environnement</caption>
       <thead><tr><th>Variable</th><th>Rôle</th></tr></thead>
       <tbody>
         <tr><td><code>REMPART_CONFIG</code></td><td>Chemin du fichier de configuration (défaut <code>rempart.yaml</code>).</td></tr>
@@ -426,7 +427,7 @@ curl -sS -H @/etc/rempart/api.auth --cacert ac.pem -H 'Content-Type: application
 
     <!-- ================================================================= -->
     <h2 id="glossaire">Glossaire</h2>
-    <div class="table-wrap"><table><tbody>
+    <div class="table-wrap"><table><caption class="visually-hidden">Glossaire</caption><tbody>
       <tr><td><b>DNS</b></td><td>L'annuaire d'Internet : traduit un nom (exemple.fr) en adresse.</td></tr>
       <tr><td><b>Résolveur</b></td><td>Le serveur qui fait ces traductions pour vos appareils : ici, Rempart.</td></tr>
       <tr><td><b>DoH, DoT, DoQ, DNSCrypt</b></td><td>DNS chiffré, respectivement dans HTTPS, TLS, QUIC, ou par le protocole DNSCrypt.</td></tr>

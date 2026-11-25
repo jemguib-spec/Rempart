@@ -1,5 +1,7 @@
 // docs-common.js - éléments partagés par aide.html et api.html :
-// thème (même clé que l'interface), menu latéral sur téléphone, notification.
+// thème et zones défilantes (ui-shared.js), menu latéral sur téléphone, notification.
+
+import { initThemeToggles, watchScrollers, onRender } from "./ui-shared.js";
 
 export const $ = (s, r = document) => r.querySelector(s);
 export const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -20,15 +22,11 @@ export function h(tag, attrs = {}, ...kids) {
   return el;
 }
 
+// Thème (bouton [data-theme-toggle], même réglage que l'interface) et zones
+// défilantes accessibles au clavier, y compris celles ajoutées plus tard.
 export function initTheme() {
-  try { const t = localStorage.getItem("rempart-theme"); if (t) document.documentElement.dataset.theme = t; } catch {}
-  const b = $("#theme");
-  if (b) b.onclick = () => {
-    const cur = document.documentElement.dataset.theme || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
-    const next = cur === "dark" ? "light" : "dark";
-    document.documentElement.dataset.theme = next;
-    try { localStorage.setItem("rempart-theme", next); } catch {}
-  };
+  initThemeToggles();
+  onRender(document.body, (root) => watchScrollers(root, ".table-wrap, pre"));
 }
 
 export function initMenu() {

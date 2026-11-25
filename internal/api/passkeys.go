@@ -25,6 +25,12 @@ const (
 	maxPasskeys = 10
 )
 
+// errUnknownPasskey : la clé présentée n'est pas (ou plus) enregistrée pour ce
+// compte. Répondu en 404 pour que la page demande au gestionnaire de clés de
+// l'oublier (PublicKeyCredential.signalUnknownCredential) ; l'identifiant
+// vient du navigateur, le dire ne révèle rien.
+var errUnknownPasskey = errors.New("clé d'accès inconnue de Rempart")
+
 type waChallenge struct {
 	purpose string // register | 2fa | passwordless
 	ip      netip.Addr
@@ -363,7 +369,7 @@ func (a *API) passkeyLoginFinish(w http.ResponseWriter, r *http.Request) {
 	var userName, keyName string
 	err = a.Store.Update(func(s *state.State) error {
 		if passwordless && in.UserHandle != "" && in.UserHandle != s.Admin.WebAuthnUser {
-			return errors.New("compte inconnu")
+			return errUnknownPasskey // clé d'un ancien compte
 		}
 		for i := range s.Admin.Passkeys {
 			p := &s.Admin.Passkeys[i]
@@ -382,11 +388,17 @@ func (a *API) passkeyLoginFinish(w http.ResponseWriter, r *http.Request) {
 			userName, keyName = s.Admin.Username, p.Name
 			return nil
 		}
-		return errors.New("clé inconnue")
+		return errUnknownPasskey
 	})
 	if err != nil {
 		if ch.purpose == "2fa" {
 			a.chal.fail(ch.pwChal)
+		}
+		if errors.Is(err, errUnknownPasskey) {
+			a.guard.failed(ip) // compte dans la limitation des essais comme un refus
+			a.record("", "connexion.passkey-échec", err.Error()+" depuis "+ip.String())
+			jsonError(w, http.StatusNotFound, err.Error())
+			return
 		}
 		fail(err.Error())
 		return

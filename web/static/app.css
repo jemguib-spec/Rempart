@@ -4,26 +4,27 @@
    d'icônes), bureau (rail complet), très grand écran (grilles élargies). */
 
 :root {
-  --bg: #eef1f2;
-  --surface: #ffffff;
-  --sunken: #e4e9ec;
-  --raised: #f6f8f9;
-  --ink: #15212a;
-  --muted: #5a6875;
-  --line: #d6dde2;
-  --wall: #1d2b36;
+  color-scheme: light dark;
+  --bg: light-dark(#eef1f2, #10171c);
+  --surface: light-dark(#ffffff, #172028);
+  --sunken: light-dark(#e4e9ec, #1f2a33);
+  --raised: light-dark(#f6f8f9, #1b252e);
+  --ink: light-dark(#15212a, #e3eaee);
+  --muted: light-dark(#5a6875, #93a2ae);
+  --line: light-dark(#d6dde2, #2a3843);
+  --wall: light-dark(#1d2b36, #0b1115);
   --wall-ink: #e2eaef;
-  --wall-muted: #93a4b2;
-  --safe: #1f6f63;
-  --safe-ink: #ffffff;
-  --safe-soft: #d9eeea;
-  --block: #b3362a;
-  --block-soft: #f6e0dc;
-  --local: #6b4fa0;
-  --local-soft: #ebe5f6;
-  --warn: #8f5d00;
-  --warn-soft: #fbefd4;
-  --focus: #2b7fd6;
+  --wall-muted: light-dark(#93a4b2, #7d8e9a);
+  --safe: light-dark(#1f6f63, #4cb7a5);
+  --safe-ink: light-dark(#ffffff, #06201b);
+  --safe-soft: light-dark(#d9eeea, #163a34);
+  --block: light-dark(#b3362a, #e6705f);
+  --block-soft: light-dark(#f6e0dc, #3e1f1b);
+  --local: light-dark(#6b4fa0, #ae95e4);
+  --local-soft: light-dark(#ebe5f6, #2b2340);
+  --warn: light-dark(#8f5d00, #e3a948);
+  --warn-soft: light-dark(#fbefd4, #3a2c10);
+  --focus: light-dark(#2b7fd6, #73b4f6);
   --r-s: 6px;
   --r-m: 10px;
   --r-l: 14px;
@@ -32,24 +33,12 @@
   --rail: 248px;
   --gutter: clamp(16px, 3.2vw, 44px);
   --content: 1280px;
-  color-scheme: light;
 }
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --bg: #10171c; --surface: #172028; --sunken: #1f2a33; --raised: #1b252e; --ink: #e3eaee; --muted: #93a2ae;
-    --line: #2a3843; --wall: #0b1115; --wall-ink: #e2eaef; --wall-muted: #7d8e9a;
-    --safe: #4cb7a5; --safe-ink: #06201b; --safe-soft: #163a34; --block: #e6705f; --block-soft: #3e1f1b;
-    --local: #ae95e4; --local-soft: #2b2340; --warn: #e3a948; --warn-soft: #3a2c10; --focus: #73b4f6;
-    color-scheme: dark;
-  }
-}
-:root[data-theme="dark"] {
-  --bg: #10171c; --surface: #172028; --sunken: #1f2a33; --raised: #1b252e; --ink: #e3eaee; --muted: #93a2ae;
-  --line: #2a3843; --wall: #0b1115; --wall-ink: #e2eaef; --wall-muted: #7d8e9a;
-  --safe: #4cb7a5; --safe-ink: #06201b; --safe-soft: #163a34; --block: #e6705f; --block-soft: #3e1f1b;
-  --local: #ae95e4; --local-soft: #2b2340; --warn: #e3a948; --warn-soft: #3a2c10; --focus: #73b4f6;
-  color-scheme: dark;
-}
+/* Thème : <meta name="color-scheme"> vaut « light dark » (système), « light »
+   ou « dark » (choix enregistré, posé par theme.js avant l'affichage). Les
+   couleurs suivent avec light-dark() ; sans JavaScript, le système décide. */
+:root:has(meta[name="color-scheme"][content="light"]) { color-scheme: light; }
+:root:has(meta[name="color-scheme"][content="dark"]) { color-scheme: dark; }
 @media (min-width: 1800px) { :root { --content: 1560px; } }
 @media (min-width: 2600px) { :root { --content: 1900px; } html { font-size: 17px; } }
 
@@ -62,6 +51,12 @@ body {
 }
 a { color: var(--safe); text-underline-offset: 2px; }
 :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+svg[hidden] { display: none; }
+/* masqué à l'écran, lu par les lecteurs d'écran */
+.vh { position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+/* lien d'évitement : visible seulement au focus clavier */
+.skip { position: fixed; left: 12px; top: 12px; z-index: 60; padding: 10px 16px; border-radius: var(--r-s); background: var(--surface); color: var(--ink); font-weight: 600; box-shadow: 0 6px 20px rgba(0,0,0,.2); transform: translateY(-160%); }
+.skip:focus { transform: none; }
 h1, h2, h3 { line-height: 1.2; margin: 0; font-weight: 640; letter-spacing: -0.015em; }
 h1 { font-size: clamp(1.5rem, 1.2rem + 1vw, 2rem); }
 h2 { font-size: 1.12rem; }
@@ -101,11 +96,11 @@ main { min-width: 0; padding: 30px var(--gutter) 72px; }
 .page-head p { color: var(--muted); margin-top: 6px; max-width: 68ch; }
 
 /* barre du haut et onglets du bas : téléphone */
-.topbar, .tabbar, .sheet { display: none; }
+.topbar, .tabbar { display: none; }
 
 /* ---- onglets de page ---- */
-.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin: -4px 0 22px; overflow-x: auto; scrollbar-width: none; }
-.tabs::-webkit-scrollbar { display: none; }
+/* barre de défilement visible : c'est la seule indication que d'autres onglets suivent */
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin: -4px 0 22px; overflow-x: auto; scrollbar-color: var(--line) transparent; }
 .tabs a {
   white-space: nowrap; text-decoration: none; color: var(--muted); padding: 9px 12px 10px; border-bottom: 2px solid transparent;
   margin-bottom: -1px; font-weight: 520; display: flex; gap: 7px; align-items: center;
@@ -151,7 +146,15 @@ input:not([type=checkbox]):not([type=radio]), select, textarea {
   font: inherit; color: var(--ink); background: var(--raised); border: 1px solid var(--line);
   border-radius: var(--r-s); padding: 8px 11px; min-width: 0; min-height: 38px;
 }
-input:focus, select:focus, textarea:focus { border-color: var(--focus); outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 22%, transparent); }
+/* Anneau en box-shadow, plus un contour transparent : en couleurs forcées
+   (contraste élevé), l'ombre disparaît et le contour devient visible. */
+input:focus, select:focus, textarea:focus { border-color: var(--focus); outline: 2px solid transparent; outline-offset: 0; box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 22%, transparent); }
+input:user-invalid, select:user-invalid, textarea:user-invalid { border-color: var(--block); }
+input:user-invalid:focus, select:user-invalid:focus, textarea:user-invalid:focus { box-shadow: 0 0 0 3px color-mix(in srgb, var(--block) 22%, transparent); }
+.field-err { display: block; color: var(--block); font-size: 0.84rem; }
+.row > .field-err { flex-basis: 100%; }
+.act-err { display: flex; gap: 8px; align-items: flex-start; color: var(--block); font-size: 0.88rem; font-weight: 520; flex-basis: 100%; }
+.act-err .i { flex: none; margin-top: 2px; }
 textarea { font-family: var(--mono); font-size: 0.85rem; width: 100%; min-height: 140px; resize: vertical; line-height: 1.6; }
 textarea.short { min-height: 90px; }
 .field { display: grid; gap: 5px; font-size: 0.87rem; color: var(--muted); min-width: 0; }
@@ -166,6 +169,19 @@ textarea.short { min-height: 90px; }
 .switch input::after { content: ""; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: var(--surface); box-shadow: 0 1px 2px rgba(0,0,0,.25); transition: transform .15s; }
 .switch input:checked { background: var(--safe); border-color: var(--safe); }
 .switch input:checked::after { transform: translateX(16px); }
+.switch input:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+@media (forced-colors: active) {
+  /* Couleurs système : l'état reste visible en contraste élevé. */
+  .switch input { forced-color-adjust: none; background: Canvas; border-color: CanvasText; }
+  .switch input::after { background: CanvasText; box-shadow: none; }
+  .switch input:checked { background: Highlight; border-color: Highlight; }
+  .switch input:checked::after { background: HighlightText; }
+}
+/* case à cocher (sélection, acceptation) */
+.check { display: flex; gap: 12px; align-items: flex-start; cursor: pointer; padding: 6px 0; }
+.check input { accent-color: var(--safe); width: 18px; height: 18px; margin: 2px 0 0; flex: none; cursor: pointer; }
+.check b { font-weight: 560; display: block; }
+.check .muted { font-size: 0.87rem; }
 .switch b { font-weight: 560; display: block; }
 .switch .muted { font-size: 0.87rem; }
 
@@ -188,7 +204,9 @@ textarea.short { min-height: 90px; }
 .seg input:focus-visible + span { outline: 2px solid var(--focus); }
 
 /* ---- tableaux (cartes empilées sur téléphone) ---- */
-.table-wrap { overflow-x: auto; margin: 0 -4px; }
+/* Cartes selon la largeur du tableau lui-même (requête de conteneur),
+   pas celle de l'écran : un tableau dans un panneau étroit s'empile aussi. */
+.table-wrap { overflow-x: auto; margin: 0 -4px; container-type: inline-size; }
 table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
 th { text-align: left; font-weight: 560; color: var(--muted); font-size: 0.82rem; padding: 8px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 td { padding: 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
@@ -456,14 +474,35 @@ details[open] summary { margin-bottom: 10px; }
 .reveal { animation: rise .35s cubic-bezier(.2,.8,.2,1) both; }
 
 /* ---- notifications ---- */
-#toast {
-  position: fixed; bottom: 20px; right: 20px; max-width: min(440px, calc(100vw - 32px));
-  background: var(--ink); color: var(--bg); padding: 11px 16px; border-radius: var(--r-m);
-  opacity: 0; transform: translateY(8px); transition: opacity .18s, transform .18s; pointer-events: none; z-index: 50;
-  box-shadow: 0 8px 24px rgba(0,0,0,.18);
+/* Région en popover="manual" (couche supérieure) ; les notifications s'y
+   empilent. Le cadre du popover est neutralisé, seules les cartes se voient. */
+.toasts {
+  position: fixed; inset: auto 20px 20px auto; margin: 0; padding: 0; border: 0; background: none; overflow: visible;
+  width: min(440px, calc(100vw - 32px)); display: none; flex-direction: column; gap: 8px; color: inherit;
 }
-#toast.show { opacity: 1; transform: none; }
-#toast.err { background: var(--block); color: #fff; }
+.toasts:popover-open { display: flex; }
+.toast {
+  display: flex; gap: 10px; align-items: flex-start; background: var(--ink); color: var(--bg); padding: 10px 8px 10px 14px;
+  border-radius: var(--r-m); box-shadow: 0 8px 24px rgba(0,0,0,.18); animation: rise .2s cubic-bezier(.2,.8,.2,1) both;
+}
+.toast p { flex: 1; display: flex; gap: 8px; align-items: flex-start; overflow-wrap: anywhere; }
+.toast p .i { flex: none; margin-top: 2px; }
+.toast.err { background: var(--block); color: #fff; }
+.toast .icon-btn { color: inherit; background: none; border: 0; min-height: 0; padding: 4px; }
+@media (forced-colors: active) { .toast { border: 1px solid CanvasText; } }
+
+/* ---- fenêtres de confirmation ---- */
+/* Les deux règles évitent que le défilement passe à la page derrière. */
+dialog:modal { overscroll-behavior: contain; }
+dialog::backdrop { background: rgba(0,0,0,.4); overflow: hidden; overscroll-behavior: contain; }
+dialog.ask {
+  border: 1px solid var(--line); border-radius: var(--r-l); background: var(--surface); color: var(--ink);
+  padding: 22px; width: min(460px, calc(100vw - 32px)); box-shadow: 0 18px 48px rgba(0,0,0,.25);
+}
+dialog.ask[open] { display: grid; gap: 12px; }
+dialog.ask h1 { font-size: 1.15rem; }
+dialog.ask p { color: var(--muted); overflow-wrap: anywhere; }
+dialog.ask form { margin-top: 6px; }
 
 /* ---- tablette : rail d'icônes ---- */
 @media (max-width: 1100px) and (min-width: 761px) {
@@ -500,16 +539,29 @@ details[open] summary { margin-bottom: 10px; }
   }
   .tabbar svg.i { width: 22px; height: 22px; }
   .tabbar [aria-current="page"] { color: var(--safe); }
-  .sheet { position: fixed; inset: 0; z-index: 40; background: rgba(0,0,0,.35); align-items: flex-end; }
-  .sheet.open { display: flex; }
-  .sheet > div { background: var(--surface); width: 100%; border-radius: var(--r-l) var(--r-l) 0 0; padding: 10px 12px calc(14px + env(safe-area-inset-bottom)); display: grid; gap: 2px; }
-  .sheet a, .sheet button { display: flex; gap: 12px; align-items: center; padding: 13px 12px; border-radius: var(--r-s); text-decoration: none; color: var(--ink); background: none; border: 0; justify-content: flex-start; font-size: 1rem; }
-  .sheet a:hover, .sheet button:hover { background: var(--sunken); }
   main { padding: 18px 14px calc(92px + env(safe-area-inset-bottom)); }
   .page-head { margin-bottom: 16px; align-items: flex-start; }
   .panel { border-radius: var(--r-m); }
   .tabs { margin-left: -14px; margin-right: -14px; padding: 0 10px; }
-  /* tableaux en cartes */
+  .kv { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .kv dd { margin-bottom: 8px; }
+  .copy { flex-direction: column; }
+  .toasts { inset: auto 16px calc(76px + env(safe-area-inset-bottom)) 16px; width: auto; }
+  button, .btn, input:not([type=checkbox]):not([type=radio]), select { min-height: 42px; }
+}
+/* menu « Plus » du téléphone : <dialog> modal en feuille du bas */
+dialog.sheet {
+  margin: auto 0 0; width: 100%; max-width: none; max-height: 85dvh; border: 0; background: var(--surface); color: var(--ink);
+  border-radius: var(--r-l) var(--r-l) 0 0; padding: 10px 12px calc(14px + env(safe-area-inset-bottom));
+}
+dialog.sheet[open] { display: grid; gap: 2px; }
+dialog.sheet nav, dialog.sheet .sheet-actions { display: grid; gap: 2px; }
+dialog.sheet .sheet-actions { border-top: 1px solid var(--line); padding-top: 6px; margin-top: 4px; }
+dialog.sheet a, dialog.sheet button { display: flex; gap: 12px; align-items: center; padding: 13px 12px; border-radius: var(--r-s); text-decoration: none; color: var(--ink); background: none; border: 0; justify-content: flex-start; font-size: 1rem; min-height: 48px; }
+dialog.sheet a:hover, dialog.sheet button:hover { background: var(--sunken); }
+dialog.sheet a[aria-current="page"] { color: var(--safe); font-weight: 600; }
+
+@container (width < 560px) {
   table.cards thead { display: none; }
   table.cards, table.cards tbody, table.cards tr, table.cards td { display: block; width: 100%; }
   table.cards tr { border-bottom: 1px solid var(--line); padding: 10px 0; }
@@ -519,11 +571,6 @@ details[open] summary { margin-bottom: 10px; }
   table.cards td.first { text-align: left; font-weight: 560; }
   table.cards td.first::before, table.cards td.act::before { display: none; }
   table.cards td.act { justify-content: flex-end; }
-  .kv { grid-template-columns: minmax(0, 1fr); gap: 2px; }
-  .kv dd { margin-bottom: 8px; }
-  .copy { flex-direction: column; }
-  #toast { left: 16px; right: 16px; bottom: calc(76px + env(safe-area-inset-bottom)); max-width: none; }
-  button, .btn, input:not([type=checkbox]):not([type=radio]), select { min-height: 42px; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 
@@ -755,7 +802,7 @@ button.chip:disabled { opacity: .45; cursor: default; }
 .assist-head h3 { display: flex; align-items: center; gap: 10px; font-size: 1.02rem; }
 .kinds { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 250px), 1fr)); }
 button.kind { display: flex; gap: 12px; align-items: flex-start; justify-content: flex-start; text-align: left; padding: 14px; background: var(--surface); font-weight: 400; font-size: 0.92rem; }
-button.kind:hover, button.kind:focus-visible { border-color: var(--safe); background: var(--safe-soft); outline: none; }
+button.kind:hover, button.kind:focus-visible { border-color: var(--safe); background: var(--safe-soft); }
 .kind b { display: block; font-weight: 600; }
 .kind .muted { display: block; font-size: 0.85rem; margin-top: 2px; }
 .kind-ex { display: block; font-size: 0.78rem; color: var(--muted); margin-top: 6px; }

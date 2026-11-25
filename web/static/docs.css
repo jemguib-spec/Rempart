@@ -2,37 +2,39 @@
    Mêmes couleurs que app.css ; CSP stricte : aucun style en ligne. */
 
 :root {
-  --bg: #eef1f2; --surface: #ffffff; --sunken: #e4e9ec; --raised: #f6f8f9;
-  --ink: #15212a; --muted: #5a6875; --line: #d6dde2;
-  --wall: #1d2b36; --wall-ink: #e2eaef; --wall-muted: #93a4b2;
-  --safe: #1f6f63; --safe-ink: #ffffff; --safe-soft: #d9eeea;
-  --block: #b3362a; --block-soft: #f6e0dc;
-  --local: #6b4fa0; --local-soft: #ebe5f6;
-  --warn: #8f5d00; --warn-soft: #fbefd4;
-  --info: #22609e; --info-soft: #dde9f6;
-  --focus: #2b7fd6;
+  color-scheme: light dark;
+  --bg: light-dark(#eef1f2, #10171c);
+  --surface: light-dark(#ffffff, #172028);
+  --sunken: light-dark(#e4e9ec, #1f2a33);
+  --raised: light-dark(#f6f8f9, #1b252e);
+  --ink: light-dark(#15212a, #e3eaee);
+  --muted: light-dark(#5a6875, #93a2ae);
+  --line: light-dark(#d6dde2, #2a3843);
+  --wall: light-dark(#1d2b36, #0b1115);
+  --wall-ink: #e2eaef;
+  --wall-muted: light-dark(#93a4b2, #7d8e9a);
+  --safe: light-dark(#1f6f63, #4cb7a5);
+  --safe-ink: light-dark(#ffffff, #06201b);
+  --safe-soft: light-dark(#d9eeea, #163a34);
+  --block: light-dark(#b3362a, #e6705f);
+  --block-soft: light-dark(#f6e0dc, #3e1f1b);
+  --local: light-dark(#6b4fa0, #ae95e4);
+  --local-soft: light-dark(#ebe5f6, #2b2340);
+  --warn: light-dark(#8f5d00, #e3a948);
+  --warn-soft: light-dark(#fbefd4, #3a2c10);
+  --info: light-dark(#22609e, #79b3ee);
+  --info-soft: light-dark(#dde9f6, #172c42);
+  --focus: light-dark(#2b7fd6, #73b4f6);
   --r-s: 6px; --r-m: 10px; --r-l: 14px;
   --font: system-ui, -apple-system, "Segoe UI Variable Text", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
   --side: 300px;
-  color-scheme: light;
 }
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --bg: #10171c; --surface: #172028; --sunken: #1f2a33; --raised: #1b252e; --ink: #e3eaee; --muted: #93a2ae;
-    --line: #2a3843; --wall: #0b1115; --wall-ink: #e2eaef; --wall-muted: #7d8e9a;
-    --safe: #4cb7a5; --safe-ink: #06201b; --safe-soft: #163a34; --block: #e6705f; --block-soft: #3e1f1b;
-    --local: #ae95e4; --local-soft: #2b2340; --warn: #e3a948; --warn-soft: #3a2c10; --info: #79b3ee; --info-soft: #172c42; --focus: #73b4f6;
-    color-scheme: dark;
-  }
-}
-:root[data-theme="dark"] {
-  --bg: #10171c; --surface: #172028; --sunken: #1f2a33; --raised: #1b252e; --ink: #e3eaee; --muted: #93a2ae;
-  --line: #2a3843; --wall: #0b1115; --wall-ink: #e2eaef; --wall-muted: #7d8e9a;
-  --safe: #4cb7a5; --safe-ink: #06201b; --safe-soft: #163a34; --block: #e6705f; --block-soft: #3e1f1b;
-  --local: #ae95e4; --local-soft: #2b2340; --warn: #e3a948; --warn-soft: #3a2c10; --info: #79b3ee; --info-soft: #172c42; --focus: #73b4f6;
-  color-scheme: dark;
-}
+/* Thème : <meta name="color-scheme"> vaut « light dark » (système), « light »
+   ou « dark » (choix enregistré, posé par theme.js avant l'affichage). Les
+   couleurs suivent avec light-dark() ; sans JavaScript, le système décide. */
+:root:has(meta[name="color-scheme"][content="light"]) { color-scheme: light; }
+:root:has(meta[name="color-scheme"][content="dark"]) { color-scheme: dark; }
 
 * { box-sizing: border-box; }
 html, body { margin: 0; }

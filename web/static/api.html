@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
+<script src="theme.js"></script>
 <title>Console API Rempart</title>
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="docs.css">
@@ -18,7 +19,7 @@
     <a href="aide.html">Aide</a>
     <a href="api.html" aria-current="page">API</a>
     <a class="opt" href="openapi.json" download>openapi.json</a>
-    <button type="button" id="theme">Thème</button>
+    <button type="button" data-theme-toggle><span data-theme-label>Thème sombre</span></button>
   </nav>
 </header>
 <div class="layout">
@@ -74,10 +75,10 @@ printf 'Authorization: Bearer %s\n' 'rmp_…' &gt; /etc/rempart/api.auth &amp;&a
 curl -sS -H @/etc/rempart/api.auth https://rempart.maison.lan:8080/api/status</code></pre>
 
     <h3>Portées et rôles</h3>
-    <div class="table-wrap"><table id="scopes"><thead><tr><th>Portée</th><th>Qui peut l'utiliser</th></tr></thead><tbody></tbody></table></div>
+    <div class="table-wrap"><table id="scopes"><caption class="visually-hidden">Portées et rôles</caption><thead><tr><th>Portée</th><th>Qui peut l'utiliser</th></tr></thead><tbody></tbody></table></div>
 
     <h3>Codes de réponse</h3>
-    <div class="table-wrap"><table><tbody>
+    <div class="table-wrap"><table><caption class="visually-hidden">Codes de réponse</caption><tbody>
       <tr><td><code>200</code></td><td>Succès. Le corps est du JSON, sauf mention contraire (texte, archive).</td></tr>
       <tr><td><code>400</code></td><td>Requête invalide : JSON mal formé, <b>champ inconnu</b> (refusé), valeur hors bornes. Le motif est dans <code>{"error": "…"}</code>.</td></tr>
       <tr><td><code>401</code></td><td>Non authentifié, session expirée, jeton inconnu, expiré ou révoqué.</td></tr>

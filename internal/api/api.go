@@ -40,6 +40,16 @@ import (
 
 const cookieName = "rempart_session"
 
+// sessionCookie est le nom du cookie de session. En HTTPS il porte le préfixe
+// __Host- : le navigateur l'exige Secure, Path=/ et sans Domain, si bien
+// qu'aucun sous-domaine ni page en HTTP clair ne peut le poser ou l'écraser.
+func (a *API) sessionCookie() string {
+	if a.SecureCk {
+		return "__Host-" + cookieName
+	}
+	return cookieName
+}
+
 type API struct {
 	Store     *state.Store
 	Blocker   *blocker.Engine
@@ -254,7 +264,7 @@ func (a *API) clientIP(r *http.Request) netip.Addr {
 func (a *API) harden(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
-		h.Set("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+		h.Set("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; require-trusted-types-for 'script'; trusted-types rempart")
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "no-referrer")
@@ -294,7 +304,7 @@ func (a *API) requireAuth(scope string, h func(http.ResponseWriter, *http.Reques
 			h(w, r, user)
 			return
 		}
-		c, err := r.Cookie(cookieName)
+		c, err := r.Cookie(a.sessionCookie())
 		if err != nil {
 			jsonError(w, http.StatusUnauthorized, "non authentifié")
 			return
@@ -388,7 +398,7 @@ func localPrincipal(user string) Principal {
 
 func (a *API) logout(w http.ResponseWriter, r *http.Request) {
 	out := map[string]any{"ok": true}
-	if c, err := r.Cookie(cookieName); err == nil {
+	if c, err := r.Cookie(a.sessionCookie()); err == nil {
 		if p, ok := a.sess.get(c.Value); ok && p.Source == "oidc" {
 			// Déconnexion aussi chez le fournisseur, sinon un clic sur
 			// « Keycloak » rouvrirait la session sans mot de passe.
@@ -398,7 +408,7 @@ func (a *API) logout(w http.ResponseWriter, r *http.Request) {
 		}
 		a.sess.delete(c.Value)
 	}
-	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: a.SecureCk, SameSite: http.SameSiteStrictMode})
+	http.SetCookie(w, &http.Cookie{Name: a.sessionCookie(), Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: a.SecureCk, SameSite: http.SameSiteStrictMode})
 	writeJSON(w, out)
 }
 

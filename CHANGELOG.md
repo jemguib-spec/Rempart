@@ -2,6 +2,20 @@
 
 ## Non publié
 
+### Interface : accessibilité et sécurité du navigateur
+
+- **Trusted Types imposés par la CSP** (`require-trusted-types-for 'script'; trusted-types rempart`) : tout HTML injecté passe par `html```, qui échappe chaque valeur et produit un `TrustedHTML` de la seule politique autorisée. Une chaîne brute affectée à `innerHTML` est refusée par le navigateur. `object-src 'none'` ajouté. Un test vérifie qu'aucune chaîne brute n'atteint un puits HTML.
+- **Cookies préfixés en HTTPS** : `__Host-rempart_session` (Secure, Path=/, sans Domain, impossible à poser depuis un sous-domaine ou en HTTP clair) et `__Secure-rempart_oidc`. Les sessions ouvertes avant la mise à jour sont à rouvrir une fois.
+- **Confirmations dans une vraie fenêtre** (`<dialog>` modal) au lieu de `confirm()` : focus initial sur Annuler, Échap, focus rendu au bouton, texte qui dit ce qui va se passer. Une case « empêcher d'autres boîtes de dialogue » ne peut plus rendre un bouton muet.
+- **Erreurs affichées à côté de l'action** (fin du formulaire ou après le bouton) et gardées jusqu'au prochain essai ; un interrupteur refusé par le serveur revient à son état. Les notifications sont une région « Notifications » : les confirmations s'effacent après 6 s (pas pendant le survol ni le focus), les erreurs restent jusqu'à leur fermeture, toutes ont un bouton Fermer.
+- **Lecteurs d'écran** : la page entière n'est plus une région `aria-live` (chaque rafraîchissement du journal ou du tableau de bord était relu) ; annonces par `ariaNotify()` ou deux régions dédiées. Après une navigation, le focus va au titre de la page, et le titre de l'onglet suit la page. Lien « Aller au contenu ». Interrupteurs annoncés comme tels (`role="switch"`), cases à cocher gardées pour les sélections. Tableaux avec légende ; un tableau qui déborde devient une région nommée qu'on fait défiler au clavier.
+- **Validation des champs** : `:user-invalid` pour le style, `aria-invalid` et message relié par `aria-describedby`, annonce à la sortie du champ, focus sur le premier champ en erreur (connexion, code à usage unique, assistant de zone compris).
+- **Rafraîchissements sans perte de focus** : le journal ne se recharge pas pendant que la souris ou le focus est dans le tableau, et a un bouton Pause ; le tableau de bord rend le focus à l'élément équivalent après chaque rendu ; reprise immédiate quand l'onglet redevient visible.
+- **Menu « Plus » du téléphone** en `<dialog>` modal (Échap, geste retour, toucher hors du panneau, focus contenu), sans rôles de menu sur des liens.
+- **Thème** : `<meta name="color-scheme">` et `light-dark()` ; le choix est appliqué avant l'affichage (plus de flash), suit les autres onglets, et le bouton permet de revenir au réglage du système. Couleurs forcées (contraste élevé) : contour de focus des champs et état des interrupteurs visibles.
+- **Tableaux en cartes selon leur propre largeur** (requête de conteneur) et non celle de l'écran. Barre de défilement des onglets de page de nouveau visible.
+- **Clés d'accès** : proposées dans la saisie automatique des champs de connexion (`autocomplete="… webauthn"`, mediation conditionnelle) ; options et réponses au format JSON de WebAuthn quand le navigateur le permet ; une clé inconnue de Rempart reçoit un 404 et est signalée au gestionnaire de clés (`signalUnknownCredential`), qui cesse de la proposer.
+
 ### Rapidité et changements de réseau
 
 - **DoT et TCP traitent les requêtes d'une connexion en parallèle** (RFC 7766 §6.2.1.1), jusqu'à 64 par connexion, les réponses partant dans l'ordre où elles sont prêtes. La bibliothèque DNS attendait la réponse d'une requête avant de lire la suivante ; or le DNS privé d'Android envoie tout sur une seule connexion DoT : une requête lente retenait toutes celles du téléphone. Les requêtes signées TSIG et les transferts de zone restent traités une par une. À la fermeture, les réponses en cours partent encore (6 s au plus).

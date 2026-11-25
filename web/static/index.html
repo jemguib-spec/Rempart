@@ -4,13 +4,17 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
+<script src="theme.js"></script>
 <title>Rempart DNS</title>
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="app.css">
 <script type="module" src="app.js"></script>
 </head>
 <body>
-<div id="app" aria-live="polite"></div>
-<div id="toast" role="status" aria-live="polite"></div>
+<div id="app"></div>
+<section id="toasts" class="toasts" popover="manual" aria-label="Notifications"></section>
+<p class="vh">Annonces pour lecteur d'écran</p>
+<div id="announce" class="vh" aria-live="polite"></div>
+<div id="announce-urgent" class="vh" aria-live="assertive"></div>
 </body>
 </html>

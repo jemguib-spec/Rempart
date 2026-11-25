@@ -255,7 +255,7 @@ func (a *API) loginOTP(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) startSession(w http.ResponseWriter, p Principal) {
 	tok := a.sess.create(p)
-	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: tok, Path: "/", HttpOnly: true, Secure: a.SecureCk, SameSite: http.SameSiteStrictMode, MaxAge: int(a.sess.ttl.Seconds())})
+	http.SetCookie(w, &http.Cookie{Name: a.sessionCookie(), Value: tok, Path: "/", HttpOnly: true, Secure: a.SecureCk, SameSite: http.SameSiteStrictMode, MaxAge: int(a.sess.ttl.Seconds())})
 }
 
 func (a *API) otpStatus(w http.ResponseWriter, _ *http.Request, _ string) {

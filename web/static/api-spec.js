@@ -27,7 +27,7 @@ const ok = { ok: true };
 export const GROUPS = [
   {
     id: "auth", title: "Authentification",
-    text: "Ouvrir et fermer une session. Le cookie rempart_session (HttpOnly, SameSite=Strict) sert ensuite à toutes les routes. Toute requête POST, PUT, PATCH ou DELETE faite avec ce cookie doit porter l'en-tête X-Rempart: 1 (protection CSRF) ; un jeton porteur en est dispensé.",
+    text: "Ouvrir et fermer une session. Le cookie de session (HttpOnly, SameSite=Strict ; __Host-rempart_session en HTTPS, rempart_session en HTTP) sert ensuite à toutes les routes. Toute requête POST, PUT, PATCH ou DELETE faite avec ce cookie doit porter l'en-tête X-Rempart: 1 (protection CSRF) ; un jeton porteur en est dispensé.",
     endpoints: [
       { m: "POST", p: "/api/login", scope: "public", sum: "Se connecter (compte local ou LDAP)",
         text: "Vérifie le mot de passe. Sans second facteur, la session est ouverte et le cookie posé. Avec TOTP ou clé d'accès, la réponse contient un défi (5 minutes, lié à l'adresse IP, 5 essais) à compléter par /api/login/otp ou /api/login/passkey/*. Cinq échecs par adresse déclenchent un verrouillage croissant (429).",
@@ -45,7 +45,7 @@ export const GROUPS = [
       { m: "POST", p: "/api/login/passkey/finish", scope: "public", sum: "Terminer une connexion par clé d'accès",
         body: { challenge: "…", id: "…", clientDataJSON: "…", authenticatorData: "…", signature: "…", userHandle: "…" },
         fields: [["challenge", "texte", "défi WebAuthn"], ["id", "base64url", "identifiant de la clé"], ["clientDataJSON, authenticatorData, signature, userHandle", "base64url", "réponse de l'authentificateur"]],
-        resp: { user: "admin", method: "passkey" } },
+        resp: { user: "admin", method: "passkey" }, text: "404 si la clé n'est pas enregistrée dans Rempart (supprimée ici, encore dans le gestionnaire de clés) : la page le signale au navigateur (signalUnknownCredential), qui cesse de la proposer. 401 pour une signature refusée." },
       { m: "POST", p: "/api/logout", scope: "public", sum: "Se déconnecter",
         text: "Ferme la session. Pour une session OIDC, la réponse peut contenir redirect : l'adresse de déconnexion chez le fournisseur.", resp: { ok: true } },
       { m: "GET", p: "/api/auth/providers", scope: "public", sum: "Sources de comptes proposées à la connexion",

@@ -3,27 +3,38 @@
 // journal sont des données contrôlées par n'importe qui sur Internet.
 // Routes : #/<page>/<onglet>. CSP stricte : aucun style ni script en ligne.
 
-class Raw { constructor(s) { this.s = s; } toString() { return this.s; } }
+import { initThemeToggles, watchScrollers, markFields, initValidation, onRender, linkError } from "./ui-shared.js";
+
+// ---- HTML sûr (Trusted Types) ----
+// Tout HTML injecté dans la page est construit par html``, qui échappe chaque
+// valeur interpolée. Le résultat est un TrustedHTML créé par l'unique
+// politique « rempart » que la CSP autorise (require-trusted-types-for) :
+// une chaîne brute affectée à innerHTML est refusée par le navigateur.
+// raw() ne sert qu'au balisage constant écrit dans ce fichier.
+const policy = window.trustedTypes?.createPolicy("rempart", { createHTML: (s) => s });
+class SafeHTML { constructor(s) { this.s = s; } toString() { return this.s; } } // navigateurs sans Trusted Types
+const raw = (s) => (policy ? policy.createHTML(s) : new SafeHTML(s));
+const isRaw = (v) => (policy ? window.trustedTypes.isHTML(v) : v instanceof SafeHTML);
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+const part = (v) => (isRaw(v) ? String(v) : Array.isArray(v) ? v.map(part).join("") : v === false || v === null || v === undefined ? "" : esc(v));
 function html(strings, ...vals) {
-  let out = "";
-  strings.forEach((s, i) => {
-    out += s;
-    if (i < vals.length) {
-      const v = vals[i];
-      if (v instanceof Raw) out += v.s;
-      else if (Array.isArray(v)) out += v.map((x) => (x instanceof Raw ? x.s : esc(x))).join("");
-      else if (v !== false && v !== null && v !== undefined) out += esc(v);
-    }
-  });
-  return new Raw(out);
+  let out = strings[0];
+  vals.forEach((v, i) => { out += part(v) + strings[i + 1]; });
+  return raw(out);
+}
+const EMPTY = raw("");
+// Premier élément d'un fragment html`` (un <template> n'exécute rien).
+function frag(h) {
+  const t = document.createElement("template");
+  t.innerHTML = h;
+  return t.content.firstElementChild;
 }
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 const arr = (x) => (Array.isArray(x) ? x : []);
 const app = $("#app");
-const checked = (b) => (b ? new Raw("checked") : "");
-const selected = (b) => (b ? new Raw("selected") : "");
+const checked = (b) => (b ? raw("checked") : "");
+const selected = (b) => (b ? raw("selected") : "");
 
 // ---- API ----
 async function api(path, { method = "GET", body } = {}) {
@@ -35,23 +46,95 @@ async function api(path, { method = "GET", body } = {}) {
   });
   const data = await res.json().catch(() => ({}));
   if (res.status === 401 && !path.startsWith("/login")) { showLogin(); throw new Error("session expirée"); }
-  if (!res.ok) throw new Error(data.error || `erreur ${res.status}`);
+  if (!res.ok) { const err = new Error(data.error || `erreur ${res.status}`); err.status = res.status; throw err; }
   return data;
 }
 
-let toastTimer;
+// ---- annonces pour lecteur d'écran ----
+// Une région polie et une région urgente, présentes dès le chargement
+// (index.html) ; ariaNotify() quand le navigateur le propose.
+function announce(msg, urgent = false) {
+  if (typeof document.ariaNotify === "function") { document.ariaNotify(msg, { priority: urgent ? "high" : "normal" }); return; }
+  const r = $(urgent ? "#announce-urgent" : "#announce");
+  r.textContent = "";
+  setTimeout(() => (r.textContent = msg), 60); // vider puis remplir : un message identique est relu
+}
+
+// ---- notifications ----
+// Région nommée en popover="manual" (couche supérieure, pas de fermeture au
+// clic ailleurs). Une confirmation s'efface au bout de 6 s, sauf pendant le
+// survol ou si le focus y est ; une erreur reste jusqu'à sa fermeture.
+const toasts = $("#toasts");
+let toastReturn = null; // où rendre le focus quand la dernière notification est fermée
+toasts.addEventListener("focusin", (e) => { if (e.relatedTarget && !toasts.contains(e.relatedTarget)) toastReturn = e.relatedTarget; });
+function closeToast(t) {
+  if (!t.isConnected) return;
+  const hadFocus = t.contains(document.activeElement);
+  const next = t.nextElementSibling || t.previousElementSibling;
+  t.remove();
+  if (!toasts.childElementCount && toasts.matches(":popover-open")) toasts.hidePopover();
+  if (hadFocus) (next ? $("button", next) : toastReturn?.isConnected ? toastReturn : $("#main"))?.focus();
+}
 function toast(msg, err = false) {
-  const t = $("#toast");
-  t.textContent = msg;
-  t.className = "show" + (err ? " err" : "");
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => (t.className = ""), err ? 7000 : 2800);
+  // Pas de notification derrière une fenêtre modale : elle attend sa fermeture.
+  const modal = $("dialog:modal");
+  if (modal) { modal.addEventListener("close", () => toast(msg, err), { once: true }); return; }
+  const t = frag(html`<div class="toast ${err ? "err" : ""}"><p>${err ? icon("alert") : icon("check")}<span>${msg}</span></p><button type="button" class="icon-btn" aria-label="Fermer la notification">${icon("x")}</button></div>`);
+  $("button", t).onclick = () => closeToast(t);
+  while (toasts.childElementCount >= 4) closeToast(toasts.firstElementChild);
+  toasts.append(t);
+  if (!toasts.matches(":popover-open")) toasts.showPopover();
+  announce(msg, err);
+  if (err) return;
+  let timer;
+  const arm = () => { clearTimeout(timer); timer = setTimeout(() => closeToast(t), 6000); };
+  const hold = () => clearTimeout(timer);
+  t.addEventListener("pointerenter", hold);
+  t.addEventListener("pointerleave", () => { if (!t.contains(document.activeElement)) arm(); });
+  t.addEventListener("focusin", hold);
+  t.addEventListener("focusout", (e) => { if (!t.contains(e.relatedTarget) && !t.matches(":hover")) arm(); });
+  arm();
+}
+
+// ---- actions ----
+// L'erreur d'une action s'affiche à côté du bouton qui l'a lancée (en fin de
+// formulaire, ou juste après le bouton) et y reste jusqu'au prochain essai :
+// une notification qui disparaît ne suffit pas pour une erreur à corriger.
+const actErrors = new WeakMap();
+function showError(btn, msg) {
+  actErrors.get(btn)?.remove();
+  if (!btn?.isConnected) { toast(msg, true); return; }
+  const form = btn.closest("form");
+  const p = frag(html`<p class="act-err" role="alert">${icon("alert")}<span>${msg}</span></p>`);
+  // Jamais dans un <label> : le message entrerait dans le nom du champ.
+  if (form) form.append(p); else (btn.closest("label") || btn.closest(".row") || btn).after(p);
+  actErrors.set(btn, p);
 }
 async function act(btn, fn, okMsg) {
+  actErrors.get(btn)?.remove();
   if (btn) btn.disabled = true;
   try { const r = await fn(); if (okMsg) toast(okMsg); return r; }
-  catch (e) { toast(e.message, true); }
+  catch (e) { showError(btn, e.message); }
   finally { if (btn) btn.disabled = false; }
+}
+
+// ---- confirmation ----
+// <dialog> modal natif : page inerte, focus contenu, Échap et geste retour,
+// focus rendu au bouton d'origine. Le bouton sans risque a le focus initial.
+function ask(message, { title = "Confirmer ?", ok = "Confirmer", danger = false } = {}) {
+  return new Promise((resolve) => {
+    const d = frag(html`<dialog class="ask" aria-labelledby="ask-title" aria-describedby="ask-text">
+      <h1 id="ask-title">${title}</h1>
+      <p id="ask-text">${message}</p>
+      <form method="dialog" class="row end">
+        <button value="" autofocus>Annuler</button>
+        <button value="ok" class="${danger ? "danger solid" : "primary"}">${ok}</button>
+      </form>
+    </dialog>`);
+    d.addEventListener("close", () => { resolve(d.returnValue === "ok"); d.remove(); }, { once: true });
+    document.body.append(d);
+    d.showModal();
+  });
 }
 const copy = (text, what = "Copié") => navigator.clipboard.writeText(text).then(() => toast(what), () => toast("Copie impossible : sélectionnez le texte", true));
 function bindCopy(root) { $$("[data-copy]", root).forEach((b) => (b.onclick = () => copy(b.dataset.copy, b.dataset.copied || "Copié"))); }
@@ -79,6 +162,7 @@ const P = {
   gear: "M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7zM19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z",
   more: "M5 12h.01M12 12h.01M19 12h.01",
   moon: "M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z",
+  sun: "M12 16.5a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9zM12 2.5v2M12 19.5v2M4.6 4.6 6 6M18 18l1.4 1.4M2.5 12h2M19.5 12h2M4.6 19.4 6 18M18 6l1.4-1.4",
   out: "M15 4h4a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-4M10 17l5-5-5-5M15 12H3",
   check: "M5 12.5l4.5 4.5L19 7.5",
   alert: "M12 8v5M12 16.5h.01M10.3 3.9 2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z",
@@ -125,9 +209,10 @@ const P = {
   printer: "M7 9V3h10v6M7 17H4v-7a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v7h-3M7 14h10v7H7z",
   users: "M15 19v-1a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v1M8.5 10.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7zM22 19v-1a4 4 0 0 0-3-3.9M15 3.6a3.5 3.5 0 0 1 0 6.8",
 };
-const icon = (name, cls = "i") => new Raw(`<svg class="${cls}" viewBox="0 0 24 24" aria-hidden="true"><path d="${P[name]}"/></svg>`);
-const crenel = (cls = "") => new Raw(`<svg class="crenel ${cls}" viewBox="0 0 240 12" preserveAspectRatio="none" aria-hidden="true"><path fill="currentColor" d="${Array.from({ length: 12 }, (_, i) => `M${i * 20} 0h10v7h10V0`).join("")}V0H0z"/></svg>`);
-const logo = new Raw(`<svg viewBox="0 0 32 32" aria-hidden="true"><path fill="#4cb7a5" d="M3 30V8h5v4h4V8h8v4h4V8h5v22z"/><path fill="#1d2b36" d="M13 30v-8a3 3 0 0 1 6 0v8z"/></svg>`);
+// attrs : attributs constants écrits dans ce fichier, jamais une donnée.
+const icon = (name, cls = "i", attrs = "") => raw(`<svg class="${cls}" ${attrs} viewBox="0 0 24 24" aria-hidden="true"><path d="${P[name]}"/></svg>`);
+const crenel = (cls = "") => raw(`<svg class="crenel ${cls}" viewBox="0 0 240 12" preserveAspectRatio="none" aria-hidden="true"><path fill="currentColor" d="${Array.from({ length: 12 }, (_, i) => `M${i * 20} 0h10v7h10V0`).join("")}V0H0z"/></svg>`);
+const logo = raw(`<svg viewBox="0 0 32 32" aria-hidden="true"><path fill="#4cb7a5" d="M3 30V8h5v4h4V8h8v4h4V8h5v22z"/><path fill="#1d2b36" d="M13 30v-8a3 3 0 0 1 6 0v8z"/></svg>`);
 const notice = (kind, content, ic) => html`<div class="notice ${kind}">${icon(ic || { good: "check", bad: "alert", plain: "info" }[kind] || "alert")}<div>${content}</div></div>`;
 
 // ---- connexion ----
@@ -141,7 +226,7 @@ function loginScene() {
     const y = [88, 132, 110, 150, 96, 124, 142, 104, 118][i];
     return `<circle class="pk ${bad ? "bad" : "ok"} d${i}" cx="0" cy="${y}" r="${bad ? 4.5 : 4}"/>`;
   }).join("");
-  return new Raw(`<svg class="scene" viewBox="0 0 360 220" aria-hidden="true">
+  return raw(`<svg class="scene" viewBox="0 0 360 220" aria-hidden="true">
     <defs><linearGradient id="lg-beam" x1="0" x2="1"><stop offset="0" stop-color="#4cb7a5" stop-opacity="0"/><stop offset="1" stop-color="#4cb7a5" stop-opacity=".55"/></linearGradient></defs>
     <g class="lanes">${[88, 104, 118, 132, 150].map((y) => `<line x1="0" x2="232" y1="${y}" y2="${y}"/>`).join("")}</g>
     ${pk}
@@ -173,7 +258,7 @@ const roleNames = { admin: "administrateur", operator: "opérateur", read: "lect
 function showLogin(msg) {
   msg = msg || pendingLoginError;
   pendingLoginError = "";
-  clearInterval(refreshTimer);
+  stopRefresh();
   shellRendered = false;
   challenge = "";
   app.innerHTML = html`
@@ -193,9 +278,9 @@ function showLogin(msg) {
         <div class="steps-x" id="steps">
           <form id="f-pass" class="step on" autocomplete="on" novalidate>
             <div><h2>Connexion</h2><p class="muted small">Interface d'administration</p></div>
-            <label class="field"><span>Utilisateur</span><input name="username" value="admin" autocomplete="username" required></label>
+            <label class="field"><span>Utilisateur</span><input name="username" value="admin" autocomplete="username webauthn" required></label>
             <label class="field"><span>Mot de passe</span>
-              <span class="pw"><input name="password" type="password" autocomplete="current-password" required autofocus>
+              <span class="pw"><input name="password" type="password" autocomplete="current-password webauthn" required autofocus aria-describedby="login-hint err1">
               <button type="button" class="eye" id="eye" aria-label="Afficher le mot de passe" aria-pressed="false">${icon("eye")}</button></span>
             </label>
             <p class="caps" id="caps" hidden>${icon("alert")} Verr. Maj activé</p>
@@ -208,10 +293,10 @@ function showLogin(msg) {
           <form id="f-otp" class="step" autocomplete="off" novalidate>
             <div class="otp-head"><span class="lock">${icon("phone")}</span><div><h2>Vérification</h2><p class="muted small" id="otp-help">Code à 6 chiffres de votre application d'authentification.</p></div></div>
             <div class="otp" id="otp-box">
-              <input id="otp" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]*" maxlength="6" aria-label="Code à usage unique" spellcheck="false">
-              <div class="cells" aria-hidden="true">${Array.from({ length: 6 }, () => new Raw("<i></i>"))}</div>
+              <input id="otp" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]*" maxlength="6" aria-label="Code à usage unique" aria-describedby="otp-help err2" spellcheck="false">
+              <div class="cells" aria-hidden="true">${Array.from({ length: 6 }, () => raw("<i></i>"))}</div>
             </div>
-            <label class="field rec" hidden><span>Code de secours</span><input id="rec" name="recovery" autocomplete="off" spellcheck="false" placeholder="xxxx-xxxx-xxxx-xxxx"></label>
+            <label class="field rec" hidden><span>Code de secours</span><input id="rec" name="recovery" autocomplete="off" spellcheck="false" placeholder="xxxx-xxxx-xxxx-xxxx" aria-describedby="otp-help err2"></label>
             <div class="ring" aria-hidden="true"><span id="ttl-txt"></span><b><i id="ttl"></i></b></div>
             <p class="err" id="err2" role="alert"></p>
             <button class="primary go" type="submit"><span>Vérifier</span>${icon("arrow")}</button>
@@ -224,15 +309,20 @@ function showLogin(msg) {
   </div>`;
   const card = $("#card"), fp = $("#f-pass"), fo = $("#f-otp");
   const pw = fp.password, otp = $("#otp"), rec = $("#rec");
-  const fail = (el, text) => {
+  // Erreur de connexion : texte dans le paragraphe role="alert" (relié au
+  // champ par aria-describedby), champ en aria-invalid jusqu'à la saisie.
+  const fail = (el, text, field) => {
     el.textContent = text;
+    if (field) { field.setAttribute("aria-invalid", "true"); field.focus(); }
     card.classList.remove("shake"); void card.offsetWidth; card.classList.add("shake");
   };
+  [pw, otp, rec].forEach((f) => f.addEventListener("input", () => f.setAttribute("aria-invalid", "false")));
   const busy = (form, on) => { const b = $(".go", form); b.disabled = on; b.classList.toggle("busy", on); };
   const success = async (r, form) => {
+    stopPasskeyAutofill();
     const b = $(".go", form);
     b.classList.add("done");
-    b.innerHTML = html`${icon("check")}<span>Bienvenue</span>`.s;
+    b.innerHTML = html`${icon("check")}<span>Bienvenue</span>`;
     card.classList.add("win");
     if (r && r.method === "code de secours") setTimeout(() => toast(`Code de secours utilisé : il en reste ${r.recovery_left}`, r.recovery_left < 3), 900);
     await new Promise((res) => setTimeout(res, matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 650));
@@ -253,7 +343,7 @@ function showLogin(msg) {
     if (pv.oidc) {
       const box = $("#sso");
       box.innerHTML = html`<div class="or"><span>ou</span></div>
-        <a class="btn sso" href="/api/oidc/login">${icon("key")}<span>Se connecter avec ${pv.oidc_label}</span></a>`.s;
+        <a class="btn sso" href="/api/oidc/login">${icon("key")}<span>Se connecter avec ${pv.oidc_label}</span></a>`;
       box.hidden = false;
     }
     if (pv.ldap) fp.username.focus();
@@ -264,7 +354,7 @@ function showLogin(msg) {
     pw.type = show ? "text" : "password";
     e.currentTarget.setAttribute("aria-pressed", String(show));
     e.currentTarget.setAttribute("aria-label", show ? "Masquer le mot de passe" : "Afficher le mot de passe");
-    e.currentTarget.innerHTML = icon(show ? "eyeoff" : "eye").s;
+    e.currentTarget.innerHTML = icon(show ? "eyeoff" : "eye");
     pw.focus();
   };
   const caps = (e) => { if (e.getModifierState) $("#caps").hidden = !e.getModifierState("CapsLock"); };
@@ -273,7 +363,7 @@ function showLogin(msg) {
   fp.addEventListener("submit", async (e) => {
     e.preventDefault();
     $("#err1").textContent = "";
-    if (!pw.value) return fail($("#err1"), "Saisissez le mot de passe.");
+    if (!pw.value) return fail($("#err1"), "Saisissez le mot de passe.", pw);
     busy(fp, true);
     try {
       const r = await api("/login", { method: "POST", body: { username: fp.username.value, password: pw.value } });
@@ -282,7 +372,7 @@ function showLogin(msg) {
         pw.value = "";
         goOtp(r);
       } else await success(r, fp);
-    } catch (err) { fail($("#err1"), err.message); }
+    } catch (err) { fail($("#err1"), err.message, pw); }
     finally { busy(fp, false); }
   });
 
@@ -309,6 +399,7 @@ function showLogin(msg) {
     $("#ttl-txt").textContent = `Nouveau code dans ${left} s`;
   };
   function goOtp(r = { otp_required: true }) {
+    stopPasskeyAutofill();
     fp.classList.remove("on"); fp.classList.add("off");
     fo.classList.add("on");
     otp.value = ""; paint();
@@ -321,11 +412,11 @@ function showLogin(msg) {
     else if (r.passkey && passkeySupported()) setTimeout(() => $("#use-key").click(), 120);
   }
   const keyLogin = async (btn, pwChallenge, errEl) => {
+    stopPasskeyAutofill(); // une seule demande WebAuthn à la fois
     btn.disabled = true;
     try {
       const opts = await api("/login/passkey/begin", { method: "POST", body: pwChallenge ? { challenge: pwChallenge } : {} });
-      const body = await passkeyGet(opts);
-      const r = await api("/login/passkey/finish", { method: "POST", body });
+      const r = await passkeyLogin(opts, await passkeyGet(opts));
       clearInterval(ttlTimer);
       await success(r, btn.closest("form"));
     } catch (err) {
@@ -334,6 +425,9 @@ function showLogin(msg) {
     } finally { btn.disabled = false; }
   };
   if (passkeySupported()) $("#pk-login").hidden = false;
+  // Clés d'accès proposées dans la saisie automatique des champs (jeton
+  // « webauthn »), sans fenêtre : le choix d'une clé connecte directement.
+  startPasskeyAutofill(async (r) => { clearInterval(ttlTimer); await success(r, fp); }, (err) => fail($("#err1"), passkeyError(err)));
   $("#pk-login").onclick = (e) => { $("#err1").textContent = ""; keyLogin(e.currentTarget, "", $("#err1")); };
   $("#use-key").onclick = (e) => { $("#err2").textContent = ""; keyLogin(e.currentTarget, challenge, $("#err2")); };
   $("#back").onclick = () => { challenge = ""; fo.classList.remove("on"); fp.classList.remove("off"); fp.classList.add("on"); pw.focus(); };
@@ -349,8 +443,8 @@ function showLogin(msg) {
     e.preventDefault();
     const code = useRec ? rec.value.trim() : otp.value;
     $("#err2").textContent = "";
-    if (!useRec && code.length !== 6) return fail($("#err2"), "Le code compte 6 chiffres.");
-    if (useRec && code.replace(/[\s-]/g, "").length !== 16) return fail($("#err2"), "Un code de secours compte 16 caractères.");
+    if (!useRec && code.length !== 6) return fail($("#err2"), "Le code compte 6 chiffres.", otp);
+    if (useRec && code.replace(/[\s-]/g, "").length !== 16) return fail($("#err2"), "Un code de secours compte 16 caractères.", rec);
     busy(fo, true);
     try {
       const r = await api("/login/otp", { method: "POST", body: { challenge, code } });
@@ -359,32 +453,95 @@ function showLogin(msg) {
     } catch (err) {
       $("#otp-box").classList.add("bad");
       otp.value = ""; paint();
-      fail($("#err2"), err.message);
-      if (/expirée|reconnectez/.test(err.message)) setTimeout(() => showLogin("Étape expirée : saisissez à nouveau le mot de passe."), 1200);
-      else (useRec ? rec : otp).focus();
+      const expired = /expirée|reconnectez/.test(err.message);
+      fail($("#err2"), err.message, expired ? null : useRec ? rec : otp);
+      if (expired) setTimeout(() => showLogin("Étape expirée : saisissez à nouveau le mot de passe."), 1200);
     } finally { busy(fo, false); }
   });
 }
 
 // ---- clés d'accès (WebAuthn) ----
+// Options et réponses au format JSON de WebAuthn : parse*OptionsFromJSON()
+// et toJSON() quand le navigateur les fournit, sinon le décodage base64url
+// ci-dessous (aucune dépendance).
+const PKC = window.PublicKeyCredential;
 const b64uEnc = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 const b64uDec = (s) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4)), (c) => c.charCodeAt(0));
-const passkeySupported = () => !!(window.PublicKeyCredential && navigator.credentials && isSecureContext);
-async function passkeyGet(opts) {
-  const cred = await navigator.credentials.get({ publicKey: {
-    challenge: b64uDec(opts.challenge), rpId: opts.rpId, timeout: opts.timeout, userVerification: opts.userVerification,
-    allowCredentials: (opts.allowCredentials || []).map((c) => ({ type: c.type, id: b64uDec(c.id) })),
-  } });
-  const r = cred.response;
-  return { challenge: opts.challenge, id: b64uEnc(cred.rawId), clientDataJSON: b64uEnc(r.clientDataJSON),
-    authenticatorData: b64uEnc(r.authenticatorData), signature: b64uEnc(r.signature), userHandle: r.userHandle ? b64uEnc(r.userHandle) : "" };
+const passkeySupported = () => !!(PKC && navigator.credentials && isSecureContext);
+const credList = (list) => (list || []).map((c) => ({ type: c.type, id: c.id }));
+function requestOptions(opts) {
+  const json = { challenge: opts.challenge, rpId: opts.rpId, timeout: opts.timeout, userVerification: opts.userVerification, allowCredentials: credList(opts.allowCredentials) };
+  if (PKC.parseRequestOptionsFromJSON) return PKC.parseRequestOptionsFromJSON(json);
+  return { ...json, challenge: b64uDec(json.challenge), allowCredentials: json.allowCredentials.map((c) => ({ ...c, id: b64uDec(c.id) })) };
+}
+function creationOptions(opts) {
+  const json = { ...opts, excludeCredentials: credList(opts.excludeCredentials) };
+  if (PKC.parseCreationOptionsFromJSON) return PKC.parseCreationOptionsFromJSON(json);
+  return { ...json, challenge: b64uDec(json.challenge), user: { ...json.user, id: b64uDec(json.user.id) }, excludeCredentials: json.excludeCredentials.map((c) => ({ ...c, id: b64uDec(c.id) })) };
+}
+const credJSON = (cred) => (typeof cred.toJSON === "function" ? cred.toJSON() : null);
+async function passkeyGet(opts, { signal, mediation } = {}) {
+  const cred = await navigator.credentials.get({ publicKey: requestOptions(opts), signal, mediation });
+  const j = credJSON(cred), r = cred.response;
+  return j
+    ? { challenge: opts.challenge, id: j.rawId, clientDataJSON: j.response.clientDataJSON, authenticatorData: j.response.authenticatorData, signature: j.response.signature, userHandle: j.response.userHandle || "" }
+    : { challenge: opts.challenge, id: b64uEnc(cred.rawId), clientDataJSON: b64uEnc(r.clientDataJSON), authenticatorData: b64uEnc(r.authenticatorData), signature: b64uEnc(r.signature), userHandle: r.userHandle ? b64uEnc(r.userHandle) : "" };
 }
 async function passkeyCreate(opts) {
-  const cred = await navigator.credentials.create({ publicKey: {
-    ...opts, challenge: b64uDec(opts.challenge), user: { ...opts.user, id: b64uDec(opts.user.id) },
-    excludeCredentials: (opts.excludeCredentials || []).map((c) => ({ type: c.type, id: b64uDec(c.id) })),
-  } });
-  return { challenge: opts.challenge, clientDataJSON: b64uEnc(cred.response.clientDataJSON), attestationObject: b64uEnc(cred.response.attestationObject) };
+  const cred = await navigator.credentials.create({ publicKey: creationOptions(opts) });
+  const j = credJSON(cred);
+  return j
+    ? { challenge: opts.challenge, clientDataJSON: j.response.clientDataJSON, attestationObject: j.response.attestationObject }
+    : { challenge: opts.challenge, clientDataJSON: b64uEnc(cred.response.clientDataJSON), attestationObject: b64uEnc(cred.response.attestationObject) };
+}
+// Vérification par le serveur. Une clé qu'il ne connaît pas (404 : supprimée
+// ici, encore présente dans le gestionnaire de clés) est signalée au
+// navigateur, qui cesse de la proposer.
+async function passkeyLogin(opts, body) {
+  try {
+    return await api("/login/passkey/finish", { method: "POST", body });
+  } catch (err) {
+    if (err.status === 404 && PKC.signalUnknownCredential) PKC.signalUnknownCredential({ rpId: opts.rpId, credentialId: body.id }).catch(() => {});
+    throw err;
+  }
+}
+// Saisie automatique (mediation « conditional ») : une demande silencieuse
+// attend qu'une clé soit choisie dans les suggestions du champ. Elle est
+// renouvelée avant l'expiration du défi (2 min côté serveur) et annulée dès
+// qu'une autre demande WebAuthn commence ou que l'étape change.
+let autofill = null;
+function stopPasskeyAutofill() {
+  if (!autofill) return;
+  clearTimeout(autofill.renew);
+  autofill.ctrl.abort();
+  autofill = null;
+}
+async function startPasskeyAutofill(onSuccess, onError) {
+  stopPasskeyAutofill();
+  if (!passkeySupported()) return;
+  const caps = PKC.getClientCapabilities ? await PKC.getClientCapabilities().catch(() => ({})) : {};
+  const conditional = caps.conditionalGet ?? (PKC.isConditionalMediationAvailable ? await PKC.isConditionalMediationAvailable().catch(() => false) : false);
+  if (!conditional) return;
+  const run = autofill = { ctrl: new AbortController() };
+  let opts;
+  try {
+    opts = await api("/login/passkey/begin", { method: "POST", body: {} });
+  } catch {
+    if (run === autofill) autofill = null; // clés d'accès indisponibles ici (adresse IP…) : rien à proposer
+    return;
+  }
+  try {
+    if (run !== autofill) return;
+    run.renew = setTimeout(() => startPasskeyAutofill(onSuccess, onError), Math.max(30000, (opts.timeout || 120000) - 15000));
+    const body = await passkeyGet(opts, { signal: run.ctrl.signal, mediation: "conditional" });
+    clearTimeout(run.renew);
+    onSuccess(await passkeyLogin(opts, body));
+  } catch (err) {
+    if (err.name === "AbortError" || run !== autofill) return; // annulée par la page
+    if (err.name !== "NotAllowedError") onError(err);
+    // De nouveau disponible après une seconde (pas de boucle si le navigateur refuse aussitôt).
+    if (run === autofill) run.renew = setTimeout(() => run === autofill && startPasskeyAutofill(onSuccess, onError), 1000);
+  }
 }
 const passkeyError = (err) => err && err.name === "NotAllowedError" ? "Opération annulée ou délai dépassé." : err && err.name === "InvalidStateError" ? "Cette clé est déjà enregistrée." : (err && err.message) || String(err);
 
@@ -416,14 +573,52 @@ const pages = [
   ["settings", "Réglages", "gear"],
 ];
 let shellRendered = false;
-let refreshTimer;
 
-function toggleTheme() {
-  const cur = document.documentElement.dataset.theme || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
-  const next = cur === "dark" ? "light" : "dark";
-  document.documentElement.dataset.theme = next;
-  try { localStorage.setItem("rempart-theme", next); } catch {}
+// ---- rafraîchissement automatique ----
+// Une seule tâche à la fois, qui saute son tour quand l'onglet est masqué,
+// quand elle est suspendue, ou quand l'utilisateur est dans la zone qu'elle
+// remplace (focus clavier, ou survol avec une souris) : on ne lui retire ni
+// le bouton visé ni sa position. Elle repart dès que l'onglet est de nouveau
+// visible.
+let refresh = null;
+const canHover = matchMedia("(hover: hover)");
+function stopRefresh() {
+  if (refresh) clearInterval(refresh.timer);
+  refresh = null;
 }
+function startRefresh(fn, ms, zone = () => null) {
+  stopRefresh();
+  const r = { paused: false, busy: false };
+  r.tick = async () => {
+    const z = zone();
+    if (document.hidden || r.paused || r.busy || z?.matches(":focus-within") || (canHover.matches && z?.matches(":hover"))) return;
+    r.busy = true;
+    try { await fn(); } catch {} finally { r.busy = false; }
+  };
+  r.timer = setInterval(r.tick, ms);
+  refresh = r;
+  return r;
+}
+document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh?.tick(); });
+
+// Rendu qui remplace une zone : le focus clavier revient sur l'élément
+// équivalent du nouveau rendu (même id, même nom et valeur, ou même
+// attribut data-*), au lieu de tomber sur <body>.
+function focusKey(el) {
+  if (el.id) return `#${CSS.escape(el.id)}`;
+  if (el.localName === "h1") return "h1";
+  if (el.name) return `[name="${CSS.escape(el.name)}"]` + (el.type === "radio" || el.type === "checkbox" ? `[value="${CSS.escape(el.value)}"]` : "");
+  const d = [...el.attributes].find((a) => a.name.startsWith("data-"));
+  return d ? `${el.localName}[${d.name}="${CSS.escape(d.value)}"]` : null;
+}
+async function keepFocus(zone, render) {
+  const a = document.activeElement;
+  const key = a && a !== zone && zone.contains(a) ? focusKey(a) : null;
+  await render();
+  const b = key && zone.querySelector(key);
+  if (b) { if (b.localName === "h1") b.tabIndex = -1; b.focus({ preventScroll: true }); }
+}
+
 async function logout() {
   const r = await api("/logout", { method: "POST" }).catch(() => ({}));
   // Session OIDC : on termine aussi la session chez le fournisseur.
@@ -431,9 +626,13 @@ async function logout() {
   showLogin();
 }
 
+// Bouton de thème : l'icône et le libellé disent ce qu'il fait (ui-shared.js).
+const themeButton = (cls = "") => html`<button type="button" class="${cls}" data-theme-toggle title="Thème sombre">${icon("moon", "i", 'data-theme-icon="dark"')}${icon("sun", "i", 'data-theme-icon="light" hidden')}<span data-theme-label>Thème sombre</span></button>`;
+
 function renderShell() {
   const mobileMain = pages.slice(0, 4);
   app.innerHTML = html`
+  <a class="skip" href="#main" id="skip">Aller au contenu</a>
   <div class="shell">
     <aside class="rail">
       ${crenel("top")}
@@ -446,7 +645,7 @@ function renderShell() {
         <span id="side-ver"></span>
         <a class="foot-link" href="aide.html" title="Aide">${icon("info")}<span>Aide</span></a>
         <a class="foot-link" href="api.html" title="Console API">${icon("code")}<span>Console API</span></a>
-        <button id="theme" type="button" title="Changer de thème">${icon("moon")}<span>Changer de thème</span></button>
+        ${themeButton()}
         <button id="logout" type="button" title="Se déconnecter">${icon("out")}<span>Se déconnecter</span></button>
       </div>
     </aside>
@@ -454,27 +653,59 @@ function renderShell() {
     <main id="main" tabindex="-1"></main>
     <nav class="tabbar" aria-label="Navigation">
       ${mobileMain.map(([id, label, ic]) => html`<a href="#/${id}" data-page="${id}">${icon(ic)}<span>${label.replace("Tableau de bord", "Accueil").replace("Zones DNSSEC", "Zones")}</span></a>`)}
-      <button type="button" id="more" data-page="more">${icon("more")}<span>Plus</span></button>
+      <button type="button" id="more" data-page="more" aria-haspopup="dialog">${icon("more")}<span>Plus</span></button>
     </nav>
-    <div class="sheet" id="sheet"><div role="menu">
-      ${pages.slice(4).map(([id, label, ic]) => html`<a href="#/${id}" role="menuitem">${icon(ic)}${label}</a>`)}
-      <a href="aide.html" role="menuitem">${icon("info")}Aide</a>
-      <a href="api.html" role="menuitem">${icon("code")}Console API</a>
-      <button type="button" data-act="theme" role="menuitem">${icon("moon")}Changer de thème</button>
-      <button type="button" data-act="logout" role="menuitem">${icon("out")}Se déconnecter</button>
-    </div></div>
-  </div>`;
+  </div>
+  <dialog class="sheet" id="sheet" closedby="any" aria-labelledby="sheet-title">
+    <h1 id="sheet-title" class="vh">Plus</h1>
+    <nav aria-label="Autres pages">
+      ${pages.slice(4).map(([id, label, ic]) => html`<a href="#/${id}" data-page="${id}">${icon(ic)}${label}</a>`)}
+      <a href="aide.html">${icon("info")}Aide</a>
+      <a href="api.html">${icon("code")}Console API</a>
+    </nav>
+    <div class="sheet-actions">
+      ${themeButton()}
+      <button type="button" data-act="logout">${icon("out")}Se déconnecter</button>
+      <button type="button" data-act="close">${icon("x")}Fermer</button>
+    </div>
+  </dialog>`;
   $("#logout").onclick = logout;
-  $("#theme").onclick = toggleTheme;
+  $("#skip").onclick = (e) => { e.preventDefault(); focusPage(); };
+  initThemeToggles(app);
+  // Menu « Plus » du téléphone : <dialog> modal (Échap, geste retour, focus
+  // contenu puis rendu au bouton), fermé aussi par un toucher hors du panneau.
   const sheet = $("#sheet");
-  $("#more").onclick = () => sheet.classList.add("open");
-  sheet.onclick = (e) => {
-    const b = e.target.closest("[data-act]");
-    if (b?.dataset.act === "theme") toggleTheme();
-    if (b?.dataset.act === "logout") logout();
-    sheet.classList.remove("open");
-  };
+  $("#more").onclick = () => sheet.showModal();
+  sheet.addEventListener("click", (e) => {
+    const t = e.target.closest("a, [data-act]");
+    if (t?.dataset.act === "logout") logout();
+    if (t) sheet.close();
+  });
+  lightDismiss(sheet);
   shellRendered = true;
+}
+
+// closedby="any" n'existe pas encore partout (Safari) : même comportement à
+// la main, en testant la position du pointeur (le <dialog> est aussi la cible
+// des clics sur ses marges). Appui et relâchement dehors, pour qu'une
+// sélection de texte terminée sur le fond ne ferme rien.
+function lightDismiss(dialog) {
+  if ("closedBy" in HTMLDialogElement.prototype) return;
+  const outside = (e) => {
+    const r = dialog.getBoundingClientRect();
+    return e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom;
+  };
+  let pressedOutside = false;
+  dialog.addEventListener("pointerdown", (e) => { pressedOutside = outside(e); });
+  dialog.addEventListener("pointerup", (e) => { if (pressedOutside && outside(e)) dialog.close(); });
+}
+
+// Après une navigation, le focus va au titre de la page : le lecteur d'écran
+// l'annonce et la tabulation repart du contenu, pas du menu.
+function focusPage() {
+  const main = $("#main");
+  const h = $("h1", main);
+  if (h) { h.tabIndex = -1; h.focus({ preventScroll: true }); } else main?.focus({ preventScroll: true });
 }
 
 function parseHash() {
@@ -482,8 +713,8 @@ function parseHash() {
   return { page: pages.find(([p]) => p === page) ? page : "dashboard", tab: tab || "" };
 }
 
-async function route() {
-  clearInterval(refreshTimer);
+async function route(navigated = false) {
+  stopRefresh();
   const { page, tab } = parseHash();
   try { me = await api("/me"); } catch { return; }
   if (!shellRendered) renderShell();
@@ -497,16 +728,18 @@ async function route() {
     on ? a.setAttribute("aria-current", "page") : a.removeAttribute("aria-current");
   });
   const main = $("#main");
-  main.innerHTML = '<div class="page"><p class="muted">Chargement…</p></div>';
+  main.innerHTML = html`<div class="page"><p class="muted">Chargement…</p></div>`;
   try {
     await views[page](main, tab);
     $(".page", main)?.classList.add("enter"); // animation d'entrée, pas aux rafraîchissements
   } catch (e) {
     main.innerHTML = html`<div class="page">${notice("bad", e.message)}</div>`;
   }
+  document.title = `${pages.find(([p]) => p === page)[1]} · Rempart DNS`;
+  if (navigated) { window.scrollTo(0, 0); focusPage(); }
   refreshStatusPill();
 }
-window.addEventListener("hashchange", () => { route(); $("#main")?.focus({ preventScroll: true }); window.scrollTo(0, 0); });
+window.addEventListener("hashchange", () => route(true));
 
 async function refreshStatusPill() {
   try {
@@ -522,10 +755,14 @@ async function refreshStatusPill() {
 
 function tabs(page, list, current) {
   const cur = list.find(([id]) => id === current) ? current : list[0][0];
-  return { cur, nav: html`<nav class="tabs" aria-label="Sections">${list.map(([id, label, dot]) => html`<a href="#/${page}/${id}" ${cur === id ? new Raw('aria-current="page"') : ""}>${label}${dot ? new Raw('<span class="dot" aria-label="action requise"></span>') : ""}</a>`)}</nav>` };
+  return { cur, nav: html`<nav class="tabs" aria-label="Sections">${list.map(([id, label, dot]) => html`<a href="#/${page}/${id}" ${cur === id ? raw('aria-current="page"') : ""}>${label}${dot ? raw('<span class="dot" aria-label="action requise"></span>') : ""}</a>`)}</nav>` };
 }
 const head = (title, text, aside = "") => html`<div class="page-head"><div><h1>${title}</h1>${text ? html`<p>${text}</p>` : ""}</div>${aside}</div>`;
-const sw = (name, on, label, help, attrs = "") => html`<label class="switch"><input type="checkbox" name="${name}" ${checked(on)} ${new Raw(attrs)}><span><b>${label}</b>${help ? html`<span class="muted">${help}</span>` : ""}</span></label>`;
+// Interrupteur : case à cocher avec l'attribut switch (rendu natif dans
+// Safari) et role="switch", lu « interrupteur, activé » et non « case à
+// cocher ». Pour un choix parmi d'autres, une acceptation ou une
+// sélection, garder une vraie case (classe .check).
+const sw = (name, on, label, help, attrs = "") => html`<label class="switch"><input type="checkbox" switch role="switch" name="${name}" ${checked(on)} ${raw(attrs)}><span><b>${label}</b>${help ? html`<span class="muted">${help}</span>` : ""}</span></label>`;
 const applyWidths = (root) => {
   $$("[data-w]", root).forEach((el) => (el.style.width = el.dataset.w + "%"));
   $$("[data-left]", root).forEach((el) => (el.style.left = el.dataset.left + "%"));
@@ -577,7 +814,7 @@ function wallChart(series, range = "24h") {
     if (show) axis += `<span data-left="${(100 * i) / series.length}">${range === "7j" ? esc(d.toLocaleDateString("fr-FR", { weekday: "short", day: "numeric" })) : range === "1h" ? hhmm(p.t) : d.getHours() + " h"}</span>`;
   });
   const aria = { "1h": "Requêtes et blocages sur la dernière heure, minute par minute", "24h": "Requêtes et blocages sur 24 heures, par tranches de 10 minutes", "7j": "Requêtes et blocages sur 7 jours, heure par heure" }[range];
-  return new Raw(`<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="${aria}">${bars}</svg><div class="axis">${axis}</div>`);
+  return raw(`<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="${aria}">${bars}</svg><div class="axis">${axis}</div>`);
 }
 
 // Carte de chaleur jour × heure : un seul ton, du clair au foncé.
@@ -609,7 +846,7 @@ function weekHeat(week) {
     }
   });
   const W = L + 24 * C, H = T + rows.length * R;
-  return html`<svg class="heat" viewBox="0 0 ${W} ${H}" role="img" aria-label="Volume de requêtes par jour et par heure sur 7 jours">${new Raw(s)}</svg>
+  return html`<svg class="heat" viewBox="0 0 ${W} ${H}" role="img" aria-label="Volume de requêtes par jour et par heure sur 7 jours">${raw(s)}</svg>
     <div class="heat-legend small muted"><span>moins</span><i class="s1"></i><i class="s2"></i><i class="s3"></i><i class="s4"></i><span>plus</span></div>`;
 }
 
@@ -681,7 +918,8 @@ function healthCards(h, st) {
 views.dashboard = async (main) => {
   let range = dashPref.get("range", "24h");
   let mode = dashPref.get("view", "");
-  const draw = async () => {
+  const draw = () => keepFocus(main, render);
+  const render = async () => {
     const [s, st] = await Promise.all([api("/stats"), api("/status")]);
     const h = s.health || {};
     const paused = st.paused_until && new Date(st.paused_until) > new Date();
@@ -699,7 +937,7 @@ views.dashboard = async (main) => {
     const series = range === "1h" ? hour : range === "7j" ? s.week : s.series;
     const lat = s.latency || {};
     const cards = healthCards(h, st);
-    const issues = cards.filter((c) => /hcard (warn|bad)/.test(c.s)).length;
+    const issues = cards.filter((c) => /hcard (warn|bad)/.test(String(c))).length;
 
     const outcome = [
       { key: "resolved", label: "Résolues en amont", count: resolved },
@@ -718,7 +956,7 @@ views.dashboard = async (main) => {
       : notice("plain", html`<p><b>Journal ${logMode === "none" ? "désactivé" : "en statistiques anonymes"}.</b> Les graphiques ci-dessous viennent de compteurs anonymes, sans domaine ni appareil, gardés en mémoire seulement. ${logMode === "none" ? "Les domaines bloqués et l'activité par groupe ne sont pas conservés." : "Les domaines les plus demandés et les clients ne sont pas conservés."} <a href="#/settings/privacy">Confidentialité</a></p>`, "eye");
 
     main.innerHTML = html`<div class="page dash">
-    ${head(new Raw(html`<span class="status-line"><span class="shield ${active ? "" : "off"}"></span>${active ? "Protection active" : paused ? "Blocage en pause" : "Blocage désactivé"}</span>`.s),
+    ${head(raw(html`<span class="status-line"><span class="shield ${active ? "" : "off"}"></span>${active ? "Protection active" : paused ? "Blocage en pause" : "Blocage désactivé"}</span>`),
       paused ? `Reprise automatique à ${time(st.paused_until)}.` : `${n(st.rules_block)} domaines bloqués par vos listes, ${n(st.rules_allow)} exceptions. Clés protégées par ${st.keystore_backend === "pkcs11" ? "le HSM" : "le keystore logiciel"}.`,
       html`<div class="dash-tools">
         <div class="seg" role="radiogroup" aria-label="Niveau de détail">
@@ -770,7 +1008,7 @@ views.dashboard = async (main) => {
 
     ${arr(s.groups).length ? html`<section class="panel mt">
       <div class="panel-head"><h2>Groupes d'appareils</h2><a class="small" href="#/clients/groups">Gérer les groupes</a></div>
-      <div class="table-wrap"><table class="cards">
+      <div class="table-wrap"><table class="cards"><caption class="vh">Activité par groupe d'appareils</caption>
         <thead><tr><th>Groupe</th><th class="num">Requêtes</th><th class="num">Bloquées</th><th class="wide">Part bloquée</th></tr></thead>
         <tbody>${s.groups.map((g) => html`<tr><td class="first"><b>${g.name || "Politique générale"}</b></td><td class="num" data-label="Requêtes">${n(g.q)}</td><td class="num" data-label="Bloquées">${n(g.b)}</td>
           <td data-label="Part bloquée"><span class="meter inline"><i class="t-block" data-w="${g.q ? (100 * g.b) / g.q : 0}"></i></span> ${pct(g.b, g.q)}</td></tr>`)}</tbody>
@@ -793,12 +1031,12 @@ views.dashboard = async (main) => {
 
     <section class="panel mt">
       <div class="panel-head"><h2>État du service</h2>${issues ? html`<span class="tag warn">${n(issues)} point${issues > 1 ? "s" : ""} à vérifier</span>` : html`<span class="tag ok">tout fonctionne</span>`}</div>
-      ${full || issues ? html`<ul class="health">${full ? cards : cards.filter((c) => /hcard (warn|bad)/.test(c.s))}</ul>` : html`<p class="muted small">Listes, certificat, audit et validation DNSSEC sont en ordre. Passez en vue « Complet » pour le détail.</p>`}
+      ${full || issues ? html`<ul class="health">${full ? cards : cards.filter((c) => /hcard (warn|bad)/.test(String(c)))}</ul>` : html`<p class="muted small">Listes, certificat, audit et validation DNSSEC sont en ordre. Passez en vue « Complet » pour le détail.</p>`}
     </section>
 
     <section class="panel mt">
       <div class="panel-head"><h2>Résolveurs en amont</h2><a class="small" href="#/settings/resolution">Choisir les résolveurs</a></div>
-      <div class="table-wrap"><table class="cards">
+      <div class="table-wrap"><table class="cards"><caption class="vh">Résolveurs en amont</caption>
         <thead><tr><th>Serveur</th><th>Transport</th><th class="num">Requêtes</th><th class="num">Échecs</th><th class="num">Latence</th></tr></thead>
         <tbody>${arr(st.upstreams).map((u) => html`<tr><td class="first domain">${u.domain ? html`<span class="tag local">${u.domain}</span> ` : ""}${u.name}</td><td data-label="Transport">${u.encrypted ? html`<span class="tag ok">chiffré</span>` : html`<span class="tag warn">en clair</span>`}</td><td class="num" data-label="Requêtes">${n(u.queries)}</td><td class="num" data-label="Échecs">${n(u.errors)}${u.queries ? html` <span class="muted small">(${pct(u.errors, u.queries)})</span>` : ""}</td><td class="num" data-label="Latence">${u.avg_ms ? u.avg_ms.toFixed(1) + " ms" : "—"}</td></tr>`)}</tbody>
       </table></div>
@@ -808,8 +1046,8 @@ views.dashboard = async (main) => {
     $$("input[name=drange]", main).forEach((r) => (r.onchange = () => { range = r.value; dashPref.set("range", range); draw().catch(() => {}); }));
     $$("input[name=dview]", main).forEach((r) => (r.onchange = () => { mode = r.value; dashPref.set("view", mode); draw().catch(() => {}); }));
   };
-  await draw();
-  refreshTimer = setInterval(() => { if (!document.hidden) draw().catch(() => {}); }, 10000);
+  startRefresh(draw, 10000); // avant le premier rendu : une navigation pendant l'attente l'arrête
+  await render();
 };
 
 // ================= Journal =================
@@ -829,7 +1067,9 @@ views.log = async (main) => {
       <select name="status" aria-label="Statut"><option value="">Tous les statuts</option>${Object.entries(statusLabel).map(([k, v]) => html`<option value="${k}">${v}</option>`)}</select>
       <select name="day" aria-label="Période"><option value="">En direct</option>${days.map((d) => html`<option value="${d}">Archive du ${d}</option>`)}</select>
       <button type="submit">${icon("refresh")}Actualiser</button>
+      <button type="button" id="live" aria-pressed="false">${icon("pause")}Pause</button>
     </form>
+    <p class="small muted" id="live-state">En direct : actualisé toutes les 5 secondes, sauf pendant que vous êtes dans le tableau.</p>
     <div class="table-wrap" id="lt"></div>
   </section></div>`;
   const form = $("#lf");
@@ -840,7 +1080,7 @@ views.log = async (main) => {
     const data = d ? await api(`/querylog/days/${d}?q=${q}`) : await api(`/querylog?limit=300&q=${q}&status=${f.get("status") || ""}`);
     let entries = arr(data.entries);
     if (d && f.get("status")) entries = entries.filter((e) => e.s === f.get("status"));
-    $("#lt").innerHTML = entries.length ? html`<table class="cards">
+    $("#lt").innerHTML = entries.length ? html`<table class="cards"><caption class="vh">Requêtes récentes</caption>
       <thead><tr><th>Heure</th><th>Domaine</th><th>Client</th><th>Type</th><th>Statut</th><th>Détail</th><th class="num">Durée</th><th></th></tr></thead>
       <tbody>${entries.map((e) => html`<tr>
         <td data-label="Heure">${time(e.t)}</td><td class="first domain">${e.n.replace(/\.$/, "")}</td><td class="mono" data-label="Client">${e.c}${e.g ? html`<br><span class="tag">${e.g}</span>` : ""}</td><td data-label="Type">${e.y}</td>
@@ -855,10 +1095,25 @@ views.log = async (main) => {
       act(b, () => api("/rules", { method: "POST", body: { domain, allow } }), allow ? `${domain} autorisé` : `${domain} bloqué`);
     }));
   };
+  // Direct : rafraîchi toutes les 5 s, suspendu tant que la souris ou le
+  // focus est dans le tableau (le bouton visé ne bouge pas), ou par Pause.
+  const live = $("#live"), liveState = $("#live-state");
+  const syncLive = () => {
+    const archive = !!new FormData(form).get("day");
+    live.hidden = archive;
+    liveState.textContent = archive ? "Archive : pas d'actualisation automatique." : live.getAttribute("aria-pressed") === "true"
+      ? "En pause : actualisez à la main ou reprenez le direct." : "En direct : actualisé toutes les 5 secondes, sauf pendant que vous êtes dans le tableau.";
+  };
+  const ticker = startRefresh(() => (new FormData(form).get("day") ? null : load()), 5000, () => $("#lt"));
+  live.onclick = () => {
+    ticker.paused = !ticker.paused;
+    live.setAttribute("aria-pressed", String(ticker.paused));
+    syncLive();
+  };
   form.onsubmit = (e) => { e.preventDefault(); load(); };
-  form.onchange = () => load();
+  form.onchange = () => { syncLive(); load(); };
+  syncLive();
   await load();
-  refreshTimer = setInterval(() => { if (!document.hidden && !new FormData(form).get("day")) load().catch(() => {}); }, 5000);
 };
 
 // ================= Filtrage =================
@@ -891,10 +1146,10 @@ filterTabs.lists = async (el) => {
   const lists = arr(await api("/lists"));
   el.innerHTML = html`<section class="panel stack">
     <div class="panel-head"><h2>Listes de blocage</h2><button id="refresh">${icon("refresh")}Mettre à jour maintenant</button></div>
-    <div class="table-wrap"><table class="cards">
+    <div class="table-wrap"><table class="cards"><caption class="vh">Listes de blocage</caption>
       <thead><tr><th>Active</th><th>Liste</th><th class="num">Règles</th><th>Mise à jour</th><th></th></tr></thead>
       <tbody>${lists.length ? lists.map((l) => html`<tr>
-        <td data-label="Active"><label class="switch"><input type="checkbox" data-toggle="${l.id}" ${checked(l.enabled)} aria-label="Activer ${l.name}"></label></td>
+        <td data-label="Active"><label class="switch"><input type="checkbox" switch role="switch" data-toggle="${l.id}" ${checked(l.enabled)} aria-label="Activer ${l.name}"></label></td>
         <td class="first"><b>${l.name}</b>${l.allow ? html` <span class="tag ok">exceptions</span>` : ""}${l.sha256 ? html` <span class="tag">empreinte épinglée</span>` : ""}<br><span class="domain muted">${l.url}</span>
           ${l.last_error ? html`<div class="mt">${notice("bad", l.last_error)}</div>` : ""}</td>
         <td class="num" data-label="Règles">${n(l.count)}</td>
@@ -912,9 +1167,9 @@ filterTabs.lists = async (el) => {
     </form>
   </section>`;
   const reload = () => filterTabs.lists(el);
-  $("#refresh").onclick = (e) => act(e.currentTarget, () => api("/lists/refresh", { method: "POST" }), "Listes mises à jour").then(reload);
-  $$("[data-toggle]", el).forEach((c) => (c.onchange = () => act(null, () => api("/lists/" + c.dataset.toggle, { method: "PATCH", body: { enabled: c.checked } }), c.checked ? "Liste activée" : "Liste désactivée")));
-  $$("[data-del]", el).forEach((b) => (b.onclick = () => confirm(`Supprimer la liste « ${b.dataset.name} » ?`) && act(b, () => api("/lists/" + b.dataset.del, { method: "DELETE" }), "Liste supprimée").then(reload)));
+  $("#refresh").onclick = (e) => act(e.currentTarget, () => api("/lists/refresh", { method: "POST" }), "Listes mises à jour").then((r) => r && reload());
+  $$("[data-toggle]", el).forEach((c) => (c.onchange = () => act(c, () => api("/lists/" + c.dataset.toggle, { method: "PATCH", body: { enabled: c.checked } }), c.checked ? "Liste activée" : "Liste désactivée").then((r) => { if (!r) c.checked = !c.checked; })));
+  $$("[data-del]", el).forEach((b) => (b.onclick = async () => (await ask(`La liste « ${b.dataset.name} » et ses domaines ne bloqueront plus rien.`, { danger: true, ok: "Supprimer", title: "Supprimer la liste ?" })) && act(b, () => api("/lists/" + b.dataset.del, { method: "DELETE" }), "Liste supprimée").then((r) => r && reload())));
   $("#addlist").onsubmit = (e) => {
     e.preventDefault();
     const f = new FormData(e.target);
@@ -933,7 +1188,7 @@ filterTabs.mine = async (el) => {
       <button type="submit" name="kind" value="block" class="danger">Bloquer</button>
       <button type="submit" name="kind" value="allow">Autoriser</button>
     </form>
-    ${rules.length ? html`<div class="table-wrap"><table class="cards">
+    ${rules.length ? html`<div class="table-wrap"><table class="cards"><caption class="vh">Ma liste : domaines bloqués ou autorisés</caption>
       <thead><tr><th>Domaine</th><th>Effet</th><th>Note</th><th>Ajoutée</th><th></th></tr></thead>
       <tbody>${rules.slice().reverse().map((r) => html`<tr><td class="first domain">${r.domain}</td><td data-label="Effet">${r.allow ? html`<span class="tag allowed">autorisé</span>` : html`<span class="tag blocked">bloqué</span>`}</td><td class="small" data-label="Note">${r.comment}</td><td class="small" data-label="Ajoutée">${date(r.created)}</td><td class="act"><button class="link danger" data-delrule="${r.domain}">Retirer</button></td></tr>`)}</tbody>
     </table></div>` : html`<p class="empty">Votre liste est vide. Ajoutez un domaine, importez une liste ou acceptez une suggestion.</p>`}
@@ -962,14 +1217,14 @@ filterTabs.mine = async (el) => {
     e.preventDefault();
     const f = new FormData(e.target);
     const allow = e.submitter.value === "allow";
-    act(e.submitter, () => api("/rules", { method: "POST", body: { domain: f.get("domain"), comment: f.get("comment"), allow } }), allow ? "Domaine autorisé" : "Domaine bloqué").then(reload);
+    act(e.submitter, () => api("/rules", { method: "POST", body: { domain: f.get("domain"), comment: f.get("comment"), allow } }), allow ? "Domaine autorisé" : "Domaine bloqué").then((r) => r && reload());
   };
   $("#bulk").onsubmit = (e) => {
     e.preventDefault();
     const f = new FormData(e.target);
     act(e.submitter, () => api("/rules/bulk", { method: "POST", body: { text: f.get("text"), comment: f.get("comment"), allow: !!f.get("allow") } })).then((r) => { if (r) { toast(`${r.added} règles importées${r.skipped ? `, ${r.skipped} lignes ignorées` : ""}`); reload(); } });
   };
-  $$("[data-delrule]", el).forEach((b) => (b.onclick = () => act(b, () => api("/rules?domain=" + encodeURIComponent(b.dataset.delrule), { method: "DELETE" }), "Règle retirée").then(reload)));
+  $$("[data-delrule]", el).forEach((b) => (b.onclick = () => act(b, () => api("/rules?domain=" + encodeURIComponent(b.dataset.delrule), { method: "DELETE" }), "Règle retirée").then((r) => r && reload())));
 };
 const kindLabel = { cname: "traqueur caché", voisins: "voisins bloqués", "libellé": "nom publicitaire", "aléatoire": "nom suspect" };
 filterTabs.suggestions = async (el, sug) => {
@@ -977,7 +1232,7 @@ filterTabs.suggestions = async (el, sug) => {
   el.innerHTML = html`<section class="panel stack">
     <div class="panel-head"><h2>Suggestions</h2><p>Rempart analyse en mémoire les noms résolus, sans rien noter des appareils, et propose ce qui ressemble à de la publicité, du traçage ou un logiciel malveillant. Rien ne quitte le serveur.</p></div>
     ${!sug.enabled ? notice("plain", html`<p>L'analyse est désactivée. ${sug.log_mode === "none" ? "Elle n'est pas disponible en mode « aucun journal »." : ""} Activez-la dans <a href="#/settings/privacy">Réglages, Confidentialité</a>.</p>`) : ""}
-    ${items.length ? html`<div class="table-wrap"><table class="cards">
+    ${items.length ? html`<div class="table-wrap"><table class="cards"><caption class="vh">Domaines suggérés</caption>
       <thead><tr><th>Domaine</th><th>Indice</th><th>Pourquoi</th><th class="num">Vu</th><th></th></tr></thead>
       <tbody>${items.map((s) => html`<tr>
         <td class="first domain">${s.domain}</td>
@@ -988,8 +1243,8 @@ filterTabs.suggestions = async (el, sug) => {
       </tr>`)}</tbody></table></div>` : sug.enabled ? html`<p class="empty">Rien de suspect pour l'instant. Les suggestions apparaissent au fil des requêtes.</p>` : ""}
   </section>`;
   const reload = () => views.filters($("#main"), "suggestions");
-  $$("[data-sblock]", el).forEach((b) => (b.onclick = () => act(b, () => api("/rules", { method: "POST", body: { domain: b.dataset.sblock, comment: "suggestion : " + b.dataset.reason, allow: false } }), `${b.dataset.sblock} bloqué`).then(reload)));
-  $$("[data-dismiss]", el).forEach((b) => (b.onclick = () => act(b, () => api("/suggestions/dismiss", { method: "POST", body: { domain: b.dataset.dismiss } }), "Suggestion ignorée").then(reload)));
+  $$("[data-sblock]", el).forEach((b) => (b.onclick = () => act(b, () => api("/rules", { method: "POST", body: { domain: b.dataset.sblock, comment: "suggestion : " + b.dataset.reason, allow: false } }), `${b.dataset.sblock} bloqué`).then((r) => r && reload())));
+  $$("[data-dismiss]", el).forEach((b) => (b.onclick = () => act(b, () => api("/suggestions/dismiss", { method: "POST", body: { domain: b.dataset.dismiss } }), "Suggestion ignorée").then((r) => r && reload())));
 };
 
 // ================= Appareils : groupes, profils, DHCP =================
@@ -1332,7 +1587,7 @@ clientTabs.all = async (el) => {
     const on = all.filter((e) => e.online).length, grouped = all.filter((e) => e.group).length, rnd = all.filter((e) => e.random_mac).length;
     $("#inv-kpis", el).innerHTML = html`<div class="kpi on"><span>Présents sur le réseau</span><b>${n(on)}</b></div><div class="kpi"><span>Appareils connus</span><b>${n(all.length)}</b></div>
       <div class="kpi"><span>Dans un groupe</span><b>${n(grouped)}</b></div><div class="kpi"><span>Politique générale</span><b>${n(all.length - grouped)}</b></div>${rnd ? html`<div class="kpi warn" title="${randomHelp}"><span>MAC privées</span><b>${n(rnd)}</b></div>` : ""}`;
-    $("#inv-note", el).innerHTML = !inv.neighbors && !inv.dhcp_enabled ? notice("plain", html`<p><b>Rempart ne voit pas les appareils du réseau.</b> Il les découvre par la table de voisinage de l'hôte, qui n'est visible que si le conteneur partage le réseau de l'hôte (<code>Network=host</code>), ou par son propre serveur DHCP (onglet DHCP). En attendant, ajoutez les appareils par leur adresse ci-dessous.</p>`) : "";
+    $("#inv-note", el).innerHTML = !inv.neighbors && !inv.dhcp_enabled ? notice("plain", html`<p><b>Rempart ne voit pas les appareils du réseau.</b> Il les découvre par la table de voisinage de l'hôte, qui n'est visible que si le conteneur partage le réseau de l'hôte (<code>Network=host</code>), ou par son propre serveur DHCP (onglet DHCP). En attendant, ajoutez les appareils par leur adresse ci-dessous.</p>`) : EMPTY;
   };
   const render = () => {
     const rows = shown();
@@ -1383,7 +1638,7 @@ clientTabs.all = async (el) => {
       $("input", more).select();
       return;
     }
-    if (e.target.closest("[data-close]")) { more.hidden = true; more.innerHTML = ""; return; }
+    if (e.target.closest("[data-close]")) { more.hidden = true; more.replaceChildren(); return; }
     if (e.target.closest("[data-unname]")) {
       if (await act(e.target, () => api("/inventory/name", { method: "PUT", body: { key: ent.mac || ent.ips[0], name: "", kind: "" } }), "Nom effacé")) refresh();
       return;
@@ -1397,7 +1652,7 @@ clientTabs.all = async (el) => {
     if (e.target.closest("[data-reserve]")) {
       const b = e.target.closest("[data-reserve]");
       const host = slug(ent.name || ent.hostname);
-      if (!confirm(`Réserver ${ent.ips[0]} pour « ${devTitle(ent)} » ? L'appareil gardera toujours cette adresse${host && inv.dhcp_domain ? ` et sera joignable sous ${host}.${inv.dhcp_domain}` : ""}.`)) return;
+      if (!(await ask(`« ${devTitle(ent)} » gardera toujours l'adresse ${ent.ips[0]}${host && inv.dhcp_domain ? ` et sera joignable sous ${host}.${inv.dhcp_domain}` : ""}.`, { ok: "Réserver", title: "Réserver cette adresse ?" }))) return;
       if (await act(b, () => api("/dhcp/reserve", { method: "POST", body: { mac: ent.mac, hostname: host } }), "Adresse réservée")) refresh();
     }
   });
@@ -1435,8 +1690,8 @@ clientTabs.all = async (el) => {
     const addr = String(f.get("addr")).trim();
     const isMac = isMAC(addr);
     const name = String(f.get("name")).trim();
-    if (!isMac && !/^[0-9a-f.:]+$/i.test(addr)) return toast("Adresse IP ou MAC attendue (un réseau entier se range dans l'éditeur du groupe)", true);
-    if (!name && !f.get("group")) return toast("Donnez-lui un nom ou choisissez un groupe", true);
+    if (!isMac && !/^[0-9a-f.:]+$/i.test(addr)) return showError(e.submitter, "Adresse IP ou MAC attendue (un réseau entier se range dans l'éditeur du groupe).");
+    if (!name && !f.get("group")) return showError(e.submitter, "Donnez-lui un nom ou choisissez un groupe.");
     const ok = await act(e.submitter, async () => {
       await api("/groups/assign", { method: "POST", body: { clients: [isMac ? { mac: addr } : { ip: addr }], group: f.get("group") } });
       if (name) await api("/inventory/name", { method: "PUT", body: { key: addr, name, kind: "" } });
@@ -1473,7 +1728,7 @@ clientTabs.groups = async (el, openId) => {
   </div>`;
   const reload = (id) => clientTabs.groups(el, id);
   const ed = $("#gedit", el);
-  const close = () => { ed.hidden = true; ed.innerHTML = ""; $$(".gcard.editing", el).forEach((c) => c.classList.remove("editing")); };
+  const close = () => { ed.hidden = true; ed.replaceChildren(); $$(".gcard.editing", el).forEach((c) => c.classList.remove("editing")); };
   const open = (g) => {
     close();
     ed.innerHTML = html`<div class="editor-head">${avatar(g.name || "+")}<div class="grow"><h2>${g.id ? g.name : "Nouveau groupe"}</h2><p class="muted small">${g.id ? `${plural(arr(g.clients).length, "appareil")} · modifications appliquées à l'enregistrement` : "Choisissez les appareils, puis ce qu'il faut bloquer."}</p></div><button type="button" class="icon-btn" data-close aria-label="Fermer">${icon("x")}</button></div>${groupForm(g, d)}`;
@@ -1501,12 +1756,12 @@ clientTabs.groups = async (el, openId) => {
     });
     $$("[data-adddev]", f).forEach((b) => (b.disabled = lines(f.elements.clients.value).includes(b.dataset.adddev)));
     $("[data-addsched]", f).onclick = () => {
-      $(".scheds", f).insertAdjacentHTML("beforeend", schedRow({ days: [1, 2, 3, 4, 0], block_all: true }, d, n++).s);
+      $(".scheds", f).insertAdjacentHTML("beforeend", schedRow({ days: [1, 2, 3, 4, 0], block_all: true }, d, n++));
       bindSvc(f);
     };
     $("[data-cancel]", f).onclick = close;
     const del = $("[data-delgroup]", f);
-    if (del) del.onclick = () => confirm(`Supprimer le groupe « ${g.name} » ? Ses appareils suivront la politique générale.`) && act(del, () => api("/groups/" + g.id, { method: "DELETE" }), "Groupe supprimé").then(() => reload());
+    if (del) del.onclick = async () => (await ask(`Les appareils du groupe « ${g.name} » suivront la politique générale.`, { danger: true, ok: "Supprimer", title: "Supprimer le groupe ?" })) && act(del, () => api("/groups/" + g.id, { method: "DELETE" }), "Groupe supprimé").then((r) => r && reload());
     f.onsubmit = (e) => {
       e.preventDefault();
       const body = readGroup(f);
@@ -1532,7 +1787,7 @@ clientTabs.groups = async (el, openId) => {
       : r.result.allowed ? html`<b>${r.domain}</b> est autorisé explicitement pour ${r.client} (${who}).` : html`<b>${r.domain}</b> n'est pas bloqué pour ${r.client} (${who}).`;
     $("#cchk-res").innerHTML = html`<div class="mt">${notice(r.result.blocked ? "bad" : "good", html`${msg}${r.mac ? html` <span class="muted small">MAC ${r.mac}</span>` : ""}`)}</div>`;
   };
-  $$("[data-gpause]", el).forEach((b) => (b.onclick = () => act(b, () => api(`/groups/${b.closest("[data-group]").dataset.group}/pause`, { method: "POST", body: { minutes: +b.dataset.gpause } }), +b.dataset.gpause ? "Filtrage du groupe en pause" : "Filtrage du groupe repris").then(() => reload())));
+  $$("[data-gpause]", el).forEach((b) => (b.onclick = () => act(b, () => api(`/groups/${b.closest("[data-group]").dataset.group}/pause`, { method: "POST", body: { minutes: +b.dataset.gpause } }), +b.dataset.gpause ? "Filtrage du groupe en pause" : "Filtrage du groupe repris").then((r) => r && reload())));
 };
 
 clientTabs.devices = async (el) => {
@@ -1589,12 +1844,12 @@ clientTabs.devices = async (el) => {
     const f = new FormData(e.target);
     act(e.submitter, () => api("/devices", { method: "POST", body: { name: f.get("name"), group: f.get("group"), host: f.get("host"), ca_pem: f.get("ca_pem") } })).then((r) => r && show(r, f.get("host")));
   };
-  $$("[data-rotate]", el).forEach((b) => (b.onclick = () => {
+  $$("[data-rotate]", el).forEach((b) => (b.onclick = async () => {
     const host = $("#devf").elements.host.value;
-    confirm(`Créer un nouveau profil pour « ${b.dataset.name} » ? L'ancienne adresse cessera aussitôt de fonctionner.`) &&
+    (await ask(`L'ancienne adresse de « ${b.dataset.name} » cessera aussitôt de fonctionner.`, { ok: "Créer un nouveau profil", title: "Remplacer le profil ?" })) &&
       act(b, () => api("/devices", { method: "POST", body: { rotate: b.dataset.rotate, host, ca_pem: $("#devf").elements.ca_pem.value } })).then((r) => r && show(r, host));
   }));
-  $$("[data-revoke]", el).forEach((b) => (b.onclick = () => confirm(`Révoquer « ${b.dataset.name} » ? Son adresse DoH cessera de fonctionner.`) && act(b, () => api("/devices/" + b.dataset.revoke, { method: "DELETE" }), "Appareil révoqué").then(reload)));
+  $$("[data-revoke]", el).forEach((b) => (b.onclick = async () => (await ask(`L'adresse DoH de « ${b.dataset.name} » cessera de fonctionner.`, { danger: true, ok: "Révoquer", title: "Révoquer cet appareil ?" })) && act(b, () => api("/devices/" + b.dataset.revoke, { method: "DELETE" }), "Appareil révoqué").then((r) => r && reload())));
 };
 
 clientTabs.dhcp = async (el) => {
@@ -1625,22 +1880,22 @@ clientTabs.dhcp = async (el) => {
   </section>
   <section class="panel stack">
     <h2>Baux</h2>
-    ${arr(d.leases).length ? html`<div class="table-wrap"><table class="cards"><thead><tr><th>Appareil</th><th>Adresse</th><th>MAC</th><th>Expire</th><th></th></tr></thead><tbody>
+    ${arr(d.leases).length ? html`<div class="table-wrap"><table class="cards"><caption class="vh">Baux DHCP</caption><thead><tr><th>Appareil</th><th>Adresse</th><th>MAC</th><th>Expire</th><th></th></tr></thead><tbody>
       ${arr(d.leases).map((l) => html`<tr><td class="first"><b>${l.hostname || "—"}</b>${l.static ? html` <span class="tag ok">statique</span>` : ""}</td><td class="mono" data-label="Adresse">${l.ip}</td><td class="mono" data-label="MAC">${l.mac}</td>
         <td class="small" data-label="Expire">${l.static && !isSet(l.expires) ? "—" : date(l.expires)}</td><td class="act">${l.static ? "" : html`<button class="link" data-reserve="${l.mac}" data-host="${l.hostname || ""}" title="Garder toujours cette adresse">Réserver</button><button class="link danger" data-forget="${l.mac}">Oublier</button>`}</td></tr>`)}
     </tbody></table></div>` : html`<p class="empty">Aucun bail.</p>`}
   </section></div>`;
   const reload = () => clientTabs.dhcp(el);
-  $("#dhf").onsubmit = (e) => {
+  $("#dhf").onsubmit = async (e) => {
     e.preventDefault();
     const f = new FormData(e.target);
     const stat = lines(f.get("static")).map((l) => { const [mac, ip, hostname = ""] = l.split(/\s+/); return { mac, ip, hostname }; });
     const body = { enabled: !!f.get("enabled"), interface: f.get("interface") || "", server_ip: f.get("server_ip").trim(), netmask: f.get("netmask").trim(), router: f.get("router").trim(),
       range_start: f.get("range_start").trim(), range_end: f.get("range_end").trim(), lease_hours: +f.get("lease_hours"), domain: f.get("domain").trim(), static: stat };
-    if (body.enabled && !c.enabled && !confirm("Activer le serveur DHCP ? Assurez-vous que celui de la box est désactivé.")) return;
+    if (body.enabled && !c.enabled && !(await ask("Deux serveurs DHCP sur le même réseau distribuent des adresses en conflit : vérifiez que celui de la box est désactivé.", { ok: "Activer", title: "Activer le serveur DHCP ?" }))) return;
     act(e.submitter, () => api("/dhcp", { method: "PUT", body }), "Configuration DHCP enregistrée").then((r) => r && reload());
   };
-  $$("[data-forget]", el).forEach((b) => (b.onclick = () => act(b, () => api("/dhcp/leases/" + encodeURIComponent(b.dataset.forget), { method: "DELETE" }), "Bail oublié").then(reload)));
+  $$("[data-forget]", el).forEach((b) => (b.onclick = () => act(b, () => api("/dhcp/leases/" + encodeURIComponent(b.dataset.forget), { method: "DELETE" }), "Bail oublié").then((r) => r && reload())));
   $$("[data-reserve]", el).forEach((b) => (b.onclick = () => act(b, () => api("/dhcp/reserve", { method: "POST", body: { mac: b.dataset.reserve, hostname: b.dataset.host } }), "Adresse réservée").then((r) => r && reload())));
 };
 
@@ -1669,7 +1924,7 @@ async function zonesExtra(main, zones) {
   box.innerHTML = html`
   <section class="panel stack">
     <div class="panel-head"><h2>Zones secondaires</h2><p>Zones copiées d'un serveur primaire (BIND, Knot, Windows DNS ou un autre Rempart) par AXFR signé TSIG, servies telles quelles, signatures DNSSEC du primaire comprises. Après le délai d'expiration du SOA sans contact, une zone n'est plus servie.</p></div>
-    ${status.length ? html`<div class="table-wrap"><table class="cards"><thead><tr><th>Zone</th><th>Primaire</th><th class="num">Série</th><th>Dernier transfert</th><th>État</th></tr></thead><tbody>
+    ${status.length ? html`<div class="table-wrap"><table class="cards"><caption class="vh">Zones secondaires</caption><thead><tr><th>Zone</th><th>Primaire</th><th class="num">Série</th><th>Dernier transfert</th><th>État</th></tr></thead><tbody>
       ${status.map((s) => html`<tr><td class="first domain">${s.name.replace(/\.$/, "")}${s.managed ? html` <span class="tag">réplication</span>` : ""}</td><td class="mono" data-label="Primaire">${s.primary}</td><td class="num mono" data-label="Série">${s.serial || "—"}</td><td class="small" data-label="Dernier transfert">${date(s.last_ok)}</td>
       <td data-label="État">${s.expired ? html`<span class="tag bad">expirée</span>` : s.last_error ? html`<span class="tag warn" title="${s.last_error}">erreur</span> <span class="small muted">${s.last_error}</span>` : isSet(s.last_ok) ? html`<span class="tag ok">à jour</span>` : html`<span class="tag">en attente</span>`}</td></tr>`)}
     </tbody></table></div>` : ""}
@@ -1679,7 +1934,7 @@ async function zonesExtra(main, zones) {
   </section>
   ${keys ? html`<section class="panel stack">
     <div class="panel-head"><h2>Clés TSIG</h2><p>Secrets partagés des transferts, des NOTIFY, des mises à jour dynamiques, des flux RPZ et de la réplication. Le secret n'est affiché qu'à la création ; il reste ensuite dans l'état scellé.</p></div>
-    ${keys.length ? html`<div class="table-wrap"><table class="cards"><thead><tr><th>Clé</th><th>Algorithme</th><th>Utilisée par</th><th></th></tr></thead><tbody>
+    ${keys.length ? html`<div class="table-wrap"><table class="cards"><caption class="vh">Clés TSIG</caption><thead><tr><th>Clé</th><th>Algorithme</th><th>Utilisée par</th><th></th></tr></thead><tbody>
       ${keys.map((k) => html`<tr><td class="first mono">${k.name.replace(/\.$/, "")}${k.managed ? html` <span class="tag">réplication</span>` : ""}</td><td data-label="Algorithme" class="mono small">${k.algorithm.replace(/\.$/, "")}</td>
       <td data-label="Utilisée par" class="small">${arr(k.used_by).join(", ") || html`<span class="muted">rien</span>`}</td><td class="act">${arr(k.used_by).length || k.managed ? "" : html`<button class="link danger" data-deltsig="${k.name}">Supprimer</button>`}</td></tr>`)}
     </tbody></table></div>` : html`<p class="empty">Aucune clé.</p>`}
@@ -1717,7 +1972,7 @@ async function zonesExtra(main, zones) {
     bindCopy($("#tsigres", box));
     $("#tsigdone", box).onclick = reload;
   };
-  $$("[data-deltsig]", box).forEach((b) => (b.onclick = () => confirm(`Supprimer la clé ${b.dataset.deltsig} ?`) && act(b, () => api("/tsig/" + encodeURIComponent(b.dataset.deltsig), { method: "DELETE" }), "Clé supprimée").then(reload)));
+  $$("[data-deltsig]", box).forEach((b) => (b.onclick = async () => (await ask(`Les serveurs qui signent leurs transferts ou leurs mises à jour avec la clé ${b.dataset.deltsig} seront refusés.`, { danger: true, ok: "Supprimer", title: "Supprimer la clé TSIG ?" })) && act(b, () => api("/tsig/" + encodeURIComponent(b.dataset.deltsig), { method: "DELETE" }), "Clé supprimée").then((r) => r && reload())));
   return keys;
 }
 filterTabs.rpz = async (el) => {
@@ -1726,9 +1981,9 @@ filterTabs.rpz = async (el) => {
   const st = d.status || {};
   el.innerHTML = html`<section class="panel stack">
     <div class="panel-head"><h2>Flux de menaces (RPZ)</h2><p>Zones de politique de réponse (Response Policy Zones) fournies par les éditeurs de sécurité. Elles s'appliquent à tous les appareils, avant les groupes et leurs exceptions, et même quand le blocage est en pause. Le premier flux de la liste qui correspond l'emporte.</p></div>
-    ${feeds.length ? html`<div class="table-wrap"><table class="cards"><thead><tr><th>Actif</th><th>Flux</th><th class="num">Règles</th><th>Mise à jour</th><th></th></tr></thead><tbody>
+    ${feeds.length ? html`<div class="table-wrap"><table class="cards"><caption class="vh">Flux de menaces (RPZ)</caption><thead><tr><th>Actif</th><th>Flux</th><th class="num">Règles</th><th>Mise à jour</th><th></th></tr></thead><tbody>
       ${feeds.map((f, i) => { const s = st[f.id] || {}; return html`<tr data-feed="${f.id}">
-        <td data-label="Actif"><label class="switch"><input type="checkbox" data-rpzon ${checked(f.enabled)} aria-label="Activer ${f.name}"></label></td>
+        <td data-label="Actif"><label class="switch"><input type="checkbox" switch role="switch" data-rpzon ${checked(f.enabled)} aria-label="Activer ${f.name}"></label></td>
         <td class="first"><b>${f.name}</b> <span class="tag">${f.source === "axfr" ? "AXFR + TSIG" : "HTTPS"}</span><br><span class="domain muted">${f.zone.replace(/\.$/, "")} · ${f.source === "axfr" ? f.primary : f.url}</span>
           ${s.last_error ? html`<div class="mt">${notice("bad", s.last_error)}</div>` : ""}${s.skipped ? html`<div class="small muted">${n(s.skipped)} déclencheur(s) mal formé(s) ignoré(s)</div>` : ""}</td>
         <td class="num" data-label="Règles">${n(s.rules)}</td><td class="small" data-label="Mise à jour">${date(s.last_ok)}</td>
@@ -1763,13 +2018,13 @@ filterTabs.rpz = async (el) => {
     act(e.submitter, () => api("/rpz", { method: "POST", body: { name: v.get("name"), zone: v.get("zone"), source: v.get("source"), primary: v.get("primary"), key: v.get("key"), url: v.get("url"), minutes: +v.get("minutes"), enabled: true } }), "Flux ajouté, chargement en cours").then((r) => r && setTimeout(reload, 1200));
   };
   const feedOf = (b) => feeds.find((x) => x.id === b.closest("[data-feed]").dataset.feed);
-  $$("[data-rpzon]", el).forEach((c) => (c.onchange = () => act(null, () => api("/rpz/" + feedOf(c).id, { method: "PUT", body: { ...feedOf(c), enabled: c.checked } }), c.checked ? "Flux activé" : "Flux désactivé")));
-  $$("[data-delrpz]", el).forEach((b) => (b.onclick = () => confirm(`Supprimer le flux « ${feedOf(b).name} » ?`) && act(b, () => api("/rpz/" + feedOf(b).id, { method: "DELETE" }), "Flux supprimé").then(reload)));
+  $$("[data-rpzon]", el).forEach((c) => (c.onchange = () => act(c, () => api("/rpz/" + feedOf(c).id, { method: "PUT", body: { ...feedOf(c), enabled: c.checked } }), c.checked ? "Flux activé" : "Flux désactivé").then((r) => { if (!r) c.checked = !c.checked; })));
+  $$("[data-delrpz]", el).forEach((b) => (b.onclick = async () => (await ask(`Les règles du flux « ${feedOf(b).name} » ne s'appliqueront plus.`, { danger: true, ok: "Supprimer", title: "Supprimer le flux ?" })) && act(b, () => api("/rpz/" + feedOf(b).id, { method: "DELETE" }), "Flux supprimé").then((r) => r && reload())));
   $$("[data-up]", el).forEach((b) => (b.onclick = () => {
     const ids = feeds.map((x) => x.id);
     const i = ids.indexOf(feedOf(b).id);
     [ids[i - 1], ids[i]] = [ids[i], ids[i - 1]];
-    act(b, () => api("/rpz/order", { method: "PUT", body: ids }), "Ordre enregistré").then(reload);
+    act(b, () => api("/rpz/order", { method: "PUT", body: ids }), "Ordre enregistré").then((r) => r && reload());
   }));
 };
 
@@ -1853,11 +2108,11 @@ const opsTab = async (el) => {
     };
     rf.onchange = show;
     show();
-    rf.onsubmit = (e) => {
+    rf.onsubmit = async (e) => {
       e.preventDefault();
       const d = new FormData(rf);
       const role = d.get("role") || "";
-      if (role === "replica" && rep.config.role !== "replica" && !confirm("Devenir une réplique ? La configuration de filtrage de cette instance sera remplacée par celle de l'instance principale.")) return;
+      if (role === "replica" && rep.config.role !== "replica" && !(await ask("La configuration de filtrage de cette instance sera remplacée par celle de l'instance principale.", { danger: true, ok: "Devenir une réplique", title: "Devenir une réplique ?" }))) return;
       act(e.submitter, () => api("/replication", { method: "PUT", body: { role, replicas: lines(d.get("replicas")), key: d.get("key").trim(), primary_url: d.get("primary_url").trim(), primary_dns: d.get("primary_dns").trim(), token: d.get("token"), ca_bundle: d.get("ca_bundle"), failover: !!d.get("failover"), failover_minutes: +d.get("failover_minutes") || 0 } }), "Réplication enregistrée").then((r) => r && setTabs.ops(el));
     };
   }
@@ -1998,14 +2253,14 @@ function recordsTable(z, zn) {
   const dyn = arr(z.dynamic).map((l) => parseRR(l, zn));
   if (!recs.length && !dyn.length) return html`<div class="rr-empty"><p><b>Aucun nom pour l'instant.</b></p><p class="muted small">Ajoutez votre premier appareil : par exemple <code>nas.${zn}</code> pour votre NAS, ou <code>imprimante.${zn}</code>.</p></div>`;
   const row = (r, dynamic) => r.adv
-    ? html`<tr${new Raw(dynamic ? "" : ` data-rr="${r.i}"`)}><td class="first" colspan="3"><span class="tag">ligne avancée</span> <code class="rr-raw">${r.raw}</code></td>
+    ? html`<tr${raw(dynamic ? "" : ` data-rr="${r.i}"`)}><td class="first" colspan="3"><span class="tag">ligne avancée</span> <code class="rr-raw">${r.raw}</code></td>
         <td class="act">${dynamic ? html`<span class="tag">dynamique</span>` : html`<button class="link" data-rr-edit="${r.i}">${icon("edit")}Modifier</button><button class="link danger" data-rr-del="${r.i}" aria-label="Supprimer">${icon("trash")}</button>`}</td></tr>`
-    : html`<tr${new Raw(dynamic ? "" : ` data-rr="${r.i}"`)}><td class="first"><span class="rr-name">${r.full}</span></td>
+    : html`<tr${raw(dynamic ? "" : ` data-rr="${r.i}"`)}><td class="first"><span class="rr-name">${r.full}</span></td>
         <td data-label="Type"><span class="tag ${r.type === "CNAME" ? "local" : ""}" title="${r.type}">${typeName[r.type] || r.type}</span></td>
         <td data-label="Pointe vers"><div class="rr-val"><span class="domain">${rrValue(r, zn)}</span><span class="rr-test" data-rr-out></span></div></td>
         <td class="act">${!["TXT", "SRV", "MX", "CAA", "NS", "DS"].includes(r.type) ? html`<button class="link" data-rr-test="${r.full}" data-type="${r.type === "CNAME" ? "A" : r.type}">${icon("search")}Tester</button>` : ""}
           ${dynamic ? html`<span class="tag">dynamique</span>` : html`<button class="link" data-rr-edit="${r.i}">${icon("edit")}Modifier</button><button class="link danger" data-rr-del="${r.i}" aria-label="Supprimer ${r.full}">${icon("trash")}</button>`}</td></tr>`;
-  return html`<div class="table-wrap"><table class="cards rr-table">
+  return html`<div class="table-wrap"><table class="cards rr-table"><caption class="vh">Noms de la zone</caption>
     <thead><tr><th>Nom</th><th>Type</th><th>Pointe vers</th><th></th></tr></thead>
     <tbody>${recs.map((r) => row(r, false))}${dyn.map((r) => row(r, true))}</tbody></table></div>
     ${dyn.length ? html`<p class="muted small">Les noms marqués « dynamique » sont enregistrés par un serveur DHCP ou des postes (RFC 2136) et ne se modifient pas ici.</p>` : ""}`;
@@ -2022,7 +2277,7 @@ const ttlSelect = (cur) => {
     <small class="muted">Combien de temps les appareils gardent la réponse. Court : un changement d'adresse se voit vite.</small></label>`;
 };
 const nameField = (zn, val, label, help, extra = "") => html`<label class="field"><span>${label}</span>
-  <div class="suffixed"><input name="owner" value="${val}" autocomplete="off" spellcheck="false" ${new Raw(extra)}><span class="mono">.${zn}</span></div>
+  <div class="suffixed"><input name="owner" value="${val}" autocomplete="off" spellcheck="false" ${raw(extra)}><span class="mono">.${zn}</span></div>
   ${help ? html`<small class="muted">${help}</small>` : ""}<small class="ferr" data-err="owner"></small></label>`;
 
 function kindForm(kind, zn, v, ctx) {
@@ -2058,7 +2313,7 @@ function kindForm(kind, zn, v, ctx) {
     case "service": {
       const cur = SRV_PRESETS.find(([s, p]) => s === v.svc && p === v.proto) || (v.svc ? SRV_PRESETS[SRV_PRESETS.length - 1] : SRV_PRESETS[0]);
       return html`${dl}<label class="field"><span>Service</span><select name="preset">${SRV_PRESETS.map(([s, p, port, l], i) => html`<option value="${i}" ${selected(cur[0] === s && cur[1] === p)}>${l}${s ? ` (_${s}._${p})` : ""}</option>`)}</select></label>
-      <div class="fields" data-custom ${cur[0] ? new Raw("hidden") : ""}>
+      <div class="fields" data-custom ${cur[0] ? raw("hidden") : ""}>
         <label class="field"><span>Nom du service</span><input name="svc" value="${v.svc || ""}" placeholder="monservice" spellcheck="false"><small class="ferr" data-err="svc"></small></label>
         <label class="field"><span>Protocole</span><select name="proto"><option value="tcp" ${selected(v.proto !== "udp")}>TCP</option><option value="udp" ${selected(v.proto === "udp")}>UDP</option></select></label>
       </div>
@@ -2175,11 +2430,11 @@ function openAssistant(card, z, zn, ctx, { kind, index } = {}) {
   const dyn = arr(z.dynamic).map((l) => parseRR(l, zn));
   const c = { ...ctx, recs, dyn, index: index ?? -1 };
   const editing = index !== undefined;
-  const close = () => { box.innerHTML = ""; box.hidden = true; $("[data-rr-add]", card).hidden = false; };
+  const close = () => { box.replaceChildren(); box.hidden = true; $("[data-rr-add]", card).hidden = false; };
   $("[data-rr-add]", card).hidden = true;
   box.hidden = false;
   if (!kind) {
-    box.innerHTML = html`<div class="assist reveal"><div class="assist-head"><h3>Que voulez-vous ajouter ?</h3><button type="button" class="link" data-close>${icon("x")}Fermer</button></div>${kindPicker()}</div>`.s;
+    box.innerHTML = html`<div class="assist reveal"><div class="assist-head"><h3>Que voulez-vous ajouter ?</h3><button type="button" class="link" data-close>${icon("x")}Fermer</button></div>${kindPicker()}</div>`;
     $("[data-close]", box).onclick = close;
     $$("[data-kind]", box).forEach((b) => (b.onclick = () => openAssistant(card, z, zn, ctx, { kind: b.dataset.kind })));
     $("[data-kind]", box).focus();
@@ -2192,9 +2447,9 @@ function openAssistant(card, z, zn, ctx, { kind, index } = {}) {
       <div class="row">${editing ? "" : html`<button type="button" class="link back" data-back>${icon("arrow")}Changer de type</button>`}<button type="button" class="link" data-close>${icon("x")}Fermer</button></div></div>
     ${kindForm(kind, zn, vals, c)}
     ${kind !== "raw" ? html`<details class="help"><summary>Options avancées</summary><div class="fields mt">${ttlSelect(vals.ttl || 300)}</div></details>` : ""}
-    <div class="preview" aria-live="polite" data-preview></div>
+    <div class="preview" data-preview></div>
     <div class="row end"><button type="button" class="ghost" data-close>Annuler</button><button class="primary" type="submit">${icon("check")}${editing ? "Enregistrer" : "Ajouter"}</button></div>
-  </form>`.s;
+  </form>`;
   const f = $("form", box);
   $$("[data-close]", box).forEach((b) => (b.onclick = close));
   $("[data-back]", box)?.addEventListener("click", () => openAssistant(card, z, zn, ctx));
@@ -2202,11 +2457,15 @@ function openAssistant(card, z, zn, ctx, { kind, index } = {}) {
   let touched = editing;
   const render = () => {
     const r = readKind(kind, f, zn, c);
-    $$("[data-err]", f).forEach((e) => (e.textContent = touched ? r.errors?.[e.dataset.err] || "" : ""));
-    preview.innerHTML = r.errors ? (touched ? notice("bad", html`<p>Il reste ${Object.keys(r.errors).length > 1 ? "des points" : "un point"} à corriger ci-dessus.</p>`).s : "")
+    $$("[data-err]", f).forEach((e) => {
+      e.textContent = touched ? r.errors?.[e.dataset.err] || "" : "";
+      const field = e.closest("label")?.querySelector("input, select, textarea");
+      if (field) linkError(field, e, !!e.textContent);
+    });
+    preview.innerHTML = r.errors ? (touched ? notice("bad", html`<p>Il reste ${Object.keys(r.errors).length > 1 ? "des points" : "un point"} à corriger ci-dessus.</p>`) : EMPTY)
       : html`<div class="preview-line">${icon("arrow")}<p>${r.sentence}</p></div>
         ${r.warns.map((w) => notice("", html`<p>${w}</p>`))}
-        <p class="muted small">Ligne écrite dans la zone : <code>${r.line}</code></p>`.s;
+        <p class="muted small">Ligne écrite dans la zone : <code>${r.line}</code></p>`;
     return r;
   };
   f.addEventListener("input", (e) => { if (e.target.name !== "lease") touched = touched || !!e.target.value; render(); });
@@ -2233,7 +2492,7 @@ function openAssistant(card, z, zn, ctx, { kind, index } = {}) {
     e.preventDefault();
     touched = true;
     const r = render();
-    if (r.errors) { $(".ferr:not(:empty)", f)?.closest(".field")?.querySelector("input, select, textarea")?.focus(); return; }
+    if (r.errors) { $("[aria-invalid=true]", f)?.focus(); return; } // le champ lit son erreur (aria-describedby)
     const lines = arr(z.records).slice();
     if (editing) lines[index] = r.line; else lines.push(r.line);
     const ok = await act(e.submitter, () => api("/zones/" + encodeURIComponent(z.name), { method: "PUT", body: { records: lines, dnssec: z.dnssec } }));
@@ -2281,23 +2540,23 @@ function newZoneForm(ctx, algs, firstAlg, zks) {
           <label class="choice"><input type="radio" name="pick" value="other"><span><b>Un autre nom</b><span class="muted">Pour reprendre un nom existant (domaine Active Directory, par exemple).</span></span></label>
         </div>
         <div class="fields" data-pick="sub" hidden>
-          <label class="field"><span>Votre domaine</span><input name="own" placeholder="mondomaine.fr" autocomplete="off" spellcheck="false"></label>
+          <label class="field"><span>Votre domaine</span><input name="own" placeholder="mondomaine.fr" autocomplete="off" spellcheck="false" aria-describedby="zone-verdict"></label>
           <label class="field"><span>Préfixe</span><input name="prefix" value="interne" autocomplete="off" spellcheck="false"></label>
         </div>
-        <div class="fields" data-pick="other" hidden><label class="field"><span>Nom de la zone</span><input name="custom" placeholder="corp.exemple.local" autocomplete="off" spellcheck="false"></label></div>
-        <div data-zverdict aria-live="polite"></div>
+        <div class="fields" data-pick="other" hidden><label class="field"><span>Nom de la zone</span><input name="custom" placeholder="corp.exemple.local" autocomplete="off" spellcheck="false" aria-describedby="zone-verdict"></label></div>
+        <div data-zverdict id="zone-verdict"></div>
       </div></li>
       <li class="current" data-zstep="2"><h3>Protéger les réponses</h3><div class="body">
         ${sw("dnssec", true, "Signer la zone avec DNSSEC (conseillé)", "Chaque réponse porte une signature : un appareil qui la vérifie détecte une fausse réponse. Rempart crée et renouvelle les clés tout seul ; rien à faire de votre côté.")}
         <details class="help"><summary>Options avancées</summary><div class="stack-s mt">
           <label class="field"><span>Algorithme de signature</span><select name="algorithm">
-            ${algs.map((a) => html`<option value="${a.id}" ${selected(a.id === firstAlg)} ${a.supported ? "" : new Raw("disabled")} title="${a.reason || ""}">${a.name}${a.supported ? "" : " — non pris en charge par ce HSM"}</option>`)}</select></label>
+            ${algs.map((a) => html`<option value="${a.id}" ${selected(a.id === firstAlg)} ${a.supported ? "" : raw("disabled")} title="${a.reason || ""}">${a.name}${a.supported ? "" : " — non pris en charge par ce HSM"}</option>`)}</select></label>
           <div id="zone-keyloc">${zks ? zoneKeyLocation(zks, "") : ""}</div>
         </div></details>
       </div></li>
       <li class="current" data-zstep="3"><h3>Vos premiers noms <span class="muted small">(facultatif)</span></h3><div class="body">
         ${leases.length ? html`<p class="muted small">Ces appareils ont reçu une adresse du DHCP de Rempart. Cochez ceux à nommer dans la zone :</p>
-          <div class="lease-picks">${leases.map((l) => html`<label class="switch"><input type="checkbox" name="lease" value="${l.ip}" data-host="${slug(l.hostname)}"><span><b class="mono">${slug(l.hostname)}</b><span class="muted">${l.ip}${l.static ? "" : " · adresse automatique, à réserver dans Appareils → DHCP"}</span></span></label>`)}</div>`
+          <div class="lease-picks">${leases.map((l) => html`<label class="check"><input type="checkbox" name="lease" value="${l.ip}" data-host="${slug(l.hostname)}"><span><b class="mono">${slug(l.hostname)}</b><span class="muted">${l.ip}${l.static ? "" : " · adresse automatique, à réserver dans Appareils → DHCP"}</span></span></label>`)}</div>`
         : html`<p class="muted small">Vous ajouterez vos appareils juste après, avec l'assistant : il suffit d'un nom et d'une adresse IP.</p>`}
       </div></li>
     </ol>
@@ -2321,10 +2580,10 @@ function bindNewZone(main, ctx, zks) {
     $$("[data-pick]", f).forEach((d) => (d.hidden = d.dataset.pick !== pick));
     const v = zoneNameVerdict(current(), ctx);
     $("[data-zstep='1']", f).className = v.ok ? "done" : "current";
-    verdictBox.innerHTML = v.err ? (current() || pick === "home.arpa" || pick === "lan" ? notice("bad", html`<p>${v.err}</p>`).s : "")
-      : html`<div class="preview-line">${icon("zone")}<p>Votre zone : <b>${v.ok}</b>. Vos appareils s'appelleront par exemple <b>nas.${v.ok}</b>.</p></div>${v.warns.map((w) => notice("", html`<p>${w}</p>`))}`.s;
+    verdictBox.innerHTML = v.err ? (current() || pick === "home.arpa" || pick === "lan" ? notice("bad", html`<p>${v.err}</p>`) : EMPTY)
+      : html`<div class="preview-line">${icon("zone")}<p>Votre zone : <b>${v.ok}</b>. Vos appareils s'appelleront par exemple <b>nas.${v.ok}</b>.</p></div>${v.warns.map((w) => notice("", html`<p>${w}</p>`))}`;
     const kl = $("#zone-keyloc", f);
-    if (kl && zks) kl.innerHTML = f.elements.dnssec.checked ? zoneKeyLocation(zks, v.ok || "").s : "";
+    if (kl && zks) kl.innerHTML = f.elements.dnssec.checked ? zoneKeyLocation(zks, v.ok || "") : EMPTY;
     return v;
   };
   f.addEventListener("input", upd);
@@ -2334,7 +2593,13 @@ function bindNewZone(main, ctx, zks) {
   f.onsubmit = (e) => {
     e.preventDefault();
     const v = upd();
-    if (!v.ok) { verdictBox.scrollIntoView({ block: "center", behavior: "smooth" }); return; }
+    if (!v.ok) {
+      // Focus sur le champ à corriger (ou le choix coché) ; le verdict lui est relié.
+      const field = $("[data-pick]:not([hidden]) input", f) || $("[name=pick]:checked", f);
+      field?.focus();
+      if (v.err) announce(v.err, true);
+      return;
+    }
     const seen = new Set();
     const records = $$("[name=lease]:checked", f).map((c) => { let h = c.dataset.host || "appareil", n = h, i = 2; while (seen.has(n)) n = `${h}-${i++}`; seen.add(n); return `${n} 300 IN ${isIPv6(c.value) ? "AAAA" : "A"} ${c.value}`; });
     act(e.submitter, () => api("/zones", { method: "POST", body: { name: v.ok, algorithm: f.elements.algorithm.value, dnssec: f.elements.dnssec.checked, records } }), "Zone créée").then((r) => {
@@ -2356,7 +2621,7 @@ views.zones = async (main) => {
   main.innerHTML = html`<div class="page">
   ${head("Zones DNSSEC", "Vos noms internes, servis avec autorité et signés DNSSEC. Les clés restent dans le keystore ; avec un HSM, elles n'en sortent jamais.")}
   <div class="stack">
-    <details class="panel intro" ${zones.length ? "" : new Raw("open")}><summary><b>Comment ça marche ?</b></summary>
+    <details class="panel intro" ${zones.length ? "" : raw("open")}><summary><b>Comment ça marche ?</b></summary>
       <div class="intro-grid mt">
         <div><span class="kind-ic">${icon("zone")}</span><p><b>Une zone, c'est votre domaine privé</b>, par exemple <code>home.arpa</code>. Il n'existe que chez vous.</p></div>
         <div><span class="kind-ic">${icon("device")}</span><p><b>Vous y nommez vos appareils</b> : <code>nas.home.arpa</code> au lieu de <code>192.168.1.10</code>. Plus besoin de retenir des adresses.</p></div>
@@ -2382,10 +2647,10 @@ views.zones = async (main) => {
           <div class="row end"><button type="button" data-check>${icon("check")}Vérifier sans enregistrer</button><button class="primary" data-save="${z.name}">Enregistrer et signer</button></div>
         </div>
       </details>
-      <details data-dnssec-box ${arr(z.pending_ds).length ? new Raw("open") : ""}><summary>Signature DNSSEC${z.dnssec ? html` · ${z.algorithm}` : ""}</summary><div class="stack mt">
+      <details data-dnssec-box ${arr(z.pending_ds).length ? raw("open") : ""}><summary>Signature DNSSEC${z.dnssec ? html` · ${z.algorithm}` : ""}</summary><div class="stack mt">
         ${sw("dnssec", z.dnssec, "Signer avec DNSSEC", z.dnssec ? "Désactiver retire les signatures : les appareils qui les vérifient ne pourront plus détecter une fausse réponse." : "Recommandé : Rempart crée et renouvelle les clés tout seul.", "data-dnssec")}
         ${z.dnssec ? html`
-        <div class="table-wrap"><table class="cards keys">
+        <div class="table-wrap"><table class="cards keys"><caption class="vh">Clés DNSSEC de la zone</caption>
           <thead><tr><th>Clé</th><th>Tag</th><th>État</th><th>Depuis</th><th>Origine</th></tr></thead>
           <tbody>${arr(z.keys).map((k) => html`<tr><td class="first">${k.role.toUpperCase()} <span class="mono muted small">${k.label}</span>${z.next_algorithm ? html` <span class="tag">${k.algorithm}</span>` : ""}</td><td data-label="Tag" class="mono">${k.tag}</td>
             <td data-label="État"><span class="tag ${keyState[k.state]?.[1] || ""}">${keyState[k.state]?.[0] || k.state}</span></td>
@@ -2399,8 +2664,8 @@ views.zones = async (main) => {
           <dt>Signatures</dt><dd>créées le ${date(z.signed_at)}, valides jusqu'au ${date(z.expires)}, renouvelées automatiquement</dd>
         </dl>
         <div class="row">
-          <button data-roll="zsk" ${z.rolling.zsk ? new Raw("disabled") : ""}>${icon("refresh")}${z.rolling.zsk ? "Rotation ZSK en cours" : "Changer la ZSK"}</button>
-          <button data-roll="ksk" ${z.rolling.ksk ? new Raw("disabled") : ""}>${icon("key")}${z.rolling.ksk ? "Rotation KSK en cours" : "Changer la KSK"}</button>
+          <button data-roll="zsk" ${z.rolling.zsk ? raw("disabled") : ""}>${icon("refresh")}${z.rolling.zsk ? "Rotation ZSK en cours" : "Changer la ZSK"}</button>
+          <button data-roll="ksk" ${z.rolling.ksk ? raw("disabled") : ""}>${icon("key")}${z.rolling.ksk ? "Rotation KSK en cours" : "Changer la KSK"}</button>
           <button data-resign="${z.name}" class="ghost">Re-signer maintenant</button>
         </div>
         ${z.next_algorithm ? notice("plain", html`<p><b>Changement d'algorithme en cours</b> : ${z.algorithm} → ${z.next_algorithm}. Les nouvelles clés signent d'abord sans être publiées, puis sont publiées ; publiez ensuite le nouveau DS chez le parent (ou confirmez-le ci-dessus pour une zone interne). Les anciennes clés sont retirées seules. Comptez quelques heures, plus la durée de vie du DS chez le parent.</p>`) : html`
@@ -2431,7 +2696,7 @@ views.zones = async (main) => {
       <div class="panel-head"><h2>${zones.length ? "Nouvelle zone" : "Créer votre première zone"}</h2>
         ${zones.length ? html`<button data-newzone>${icon("plus")}Nouvelle zone</button>` : ""}
         <p>${zones.length ? "Une autre zone : un second domaine privé, ou un sous-domaine d'un domaine à vous." : "Trois étapes : un nom, la protection DNSSEC, et si vous le souhaitez vos premiers appareils."}</p></div>
-      <div data-newzone-body ${zones.length ? new Raw("hidden") : ""}>${newZoneForm(ctx, algs, firstAlg, zks)}</div>
+      <div data-newzone-body ${zones.length ? raw("hidden") : ""}>${newZoneForm(ctx, algs, firstAlg, zks)}</div>
     </section>
     <div id="zones-extra" class="stack"></div>
   </div></div>`;
@@ -2450,10 +2715,10 @@ views.zones = async (main) => {
       openAssistant(card, z, zn, ctx, { kind: r.adv ? "raw" : kindOf(r.type), index: i });
       card.querySelector("[data-assist]").scrollIntoView({ block: "nearest", behavior: "smooth" });
     }));
-    $$("[data-rr-del]", card).forEach((b) => (b.onclick = () => {
+    $$("[data-rr-del]", card).forEach((b) => (b.onclick = async () => {
       const i = +b.dataset.rrDel, r = parseRR(z.records[i], zn);
       const what = r.adv ? r.raw : `${r.full} (${typeName[r.type] || r.type} : ${rrValue(r, zn)})`;
-      if (!confirm(`Supprimer ${what} ?`)) return;
+      if (!(await ask(what, { danger: true, ok: "Supprimer", title: "Supprimer ce nom ?" }))) return;
       const lines = z.records.filter((_, k) => k !== i);
       act(b, () => api(zurl(b), { method: "PUT", body: { records: lines, dnssec: z.dnssec } }), "Nom supprimé").then((x) => x && reload());
     }));
@@ -2462,11 +2727,11 @@ views.zones = async (main) => {
       const r = await act(b, () => api(`${zurl(b)}/lookup?q=${encodeURIComponent(b.dataset.rrTest)}&type=${b.dataset.type}`));
       if (!r) return;
       const vals = arr(r.answers).map((a) => a.split("\t").pop());
-      out.innerHTML = (vals.length ? html`<span class="tag ok">${icon("check")}répond ${vals[vals.length - 1]}</span>` : html`<span class="tag bad">ne répond pas (${r.rcode})</span>`).s;
+      out.innerHTML = (vals.length ? html`<span class="tag ok">${icon("check")}répond ${vals[vals.length - 1]}</span>` : html`<span class="tag bad">ne répond pas (${r.rcode})</span>`);
     }));
-    $("[data-dnssec]", card).onchange = (e) => {
+    $("[data-dnssec]", card).onchange = async (e) => {
       const on = e.target.checked;
-      if (!on && !confirm(`Ne plus signer ${zn} ? Les signatures seront retirées ; les clés restent dans le keystore.`)) { e.target.checked = true; return; }
+      if (!on && !(await ask(`Les signatures de ${zn} seront retirées ; les clés restent dans le keystore.`, { danger: true, ok: "Ne plus signer", title: "Retirer DNSSEC ?" }))) { e.target.checked = true; return; }
       act(e.target, () => api(zurl(card), { method: "PUT", body: { records: z.records, dnssec: on } }), on ? "Zone signée" : "Signature retirée").then((r) => (r ? reload() : (e.target.checked = !on)));
     };
     const ta = $("[data-records]", card), out = $("[data-check-out]", card);
@@ -2475,23 +2740,23 @@ views.zones = async (main) => {
       if (!r) return;
       const bad = arr(r.lines).filter((l) => l.error);
       out.innerHTML = (r.ok ? notice("good", html`<p><b>Tout est correct</b> : ${arr(r.lines).length} ligne(s), rien n'a encore été enregistré.</p>`)
-        : notice("bad", html`<p><b>${r.error}</b></p>${bad.length ? html`<ul class="check-list">${bad.map((l) => html`<li><b>Ligne ${l.line}</b> <code>${l.text}</code><br><span>${l.error}</span></li>`)}</ul>` : ""}`)).s;
+        : notice("bad", html`<p><b>${r.error}</b></p>${bad.length ? html`<ul class="check-list">${bad.map((l) => html`<li><b>Ligne ${l.line}</b> <code>${l.text}</code><br><span>${l.error}</span></li>`)}</ul>` : ""}`));
     };
     $("[data-save]", card).onclick = (e) => act(e.currentTarget, () => api(zurl(card), { method: "PUT", body: { records: ta.value.split("\n"), dnssec: z.dnssec } }), "Zone enregistrée et signée").then((r) => r && reload());
   });
-  $$("[data-roll]", main).forEach((b) => (b.onclick = () => {
+  $$("[data-roll]", main).forEach((b) => (b.onclick = async () => {
     const role = b.dataset.roll;
-    const msg = role === "ksk" ? "Démarrer une rotation de KSK ? Il faudra publier un nouveau DS chez le parent." : "Démarrer une rotation de ZSK ? Elle se termine seule en quelques heures.";
-    confirm(msg) && act(b, () => api(zurl(b) + "/rollover", { method: "POST", body: { role } }), "Rotation démarrée").then((r) => r && reload());
+    const msg = role === "ksk" ? "Il faudra publier un nouveau DS chez le parent." : "Elle se termine seule en quelques heures.";
+    (await ask(msg, { ok: "Démarrer la rotation", title: `Rotation de ${role.toUpperCase()} ?` })) && act(b, () => api(zurl(b) + "/rollover", { method: "POST", body: { role } }), "Rotation démarrée").then((r) => r && reload());
   }));
-  $$("[data-algroll]", main).forEach((f) => (f.onsubmit = (e) => {
+  $$("[data-algroll]", main).forEach((f) => (f.onsubmit = async (e) => {
     e.preventDefault();
     const alg = new FormData(f).get("algorithm");
-    confirm(`Passer la zone en ${alg} ? Il faudra publier un nouveau DS chez le parent.`) && act(e.submitter, () => api(zurl(f) + "/algorithm", { method: "POST", body: { algorithm: alg } }), "Changement d'algorithme démarré").then((r) => r && reload());
+    (await ask("Il faudra publier un nouveau DS chez le parent.", { ok: "Changer d'algorithme", title: `Passer la zone en ${alg} ?` })) && act(e.submitter, () => api(zurl(f) + "/algorithm", { method: "POST", body: { algorithm: alg } }), "Changement d'algorithme démarré").then((r) => r && reload());
   }));
   $$("[data-dsok]", main).forEach((b) => (b.onclick = () => act(b, () => api(zurl(b) + "/ds-confirm", { method: "POST" }), "DS confirmé : la nouvelle KSK est active").then((r) => r && reload())));
-  $$("[data-resign]", main).forEach((b) => (b.onclick = () => act(b, () => api(zurl(b) + "/resign", { method: "POST" }), "Zone re-signée").then(reload)));
-  $$("[data-delzone]", main).forEach((b) => (b.onclick = () => confirm(`Supprimer la zone ${b.dataset.delzone} et tous ses noms ? Les clés restent dans le keystore.`) && act(b, () => api("/zones/" + encodeURIComponent(b.dataset.delzone), { method: "DELETE" }), "Zone supprimée").then(reload)));
+  $$("[data-resign]", main).forEach((b) => (b.onclick = () => act(b, () => api(zurl(b) + "/resign", { method: "POST" }), "Zone re-signée").then((r) => r && reload())));
+  $$("[data-delzone]", main).forEach((b) => (b.onclick = async () => (await ask(`La zone ${b.dataset.delzone} et tous ses noms seront supprimés. Les clés restent dans le keystore.`, { danger: true, ok: "Supprimer la zone", title: "Supprimer la zone ?" })) && act(b, () => api("/zones/" + encodeURIComponent(b.dataset.delzone), { method: "DELETE" }), "Zone supprimée").then((r) => r && reload())));
   $$("[data-policy]", main).forEach((f) => (f.onsubmit = (e) => {
     e.preventDefault();
     const d = new FormData(f);
@@ -2525,7 +2790,7 @@ function usage(label) {
 secTabs.keys = async (el, s) => {
   const ov = s.override;
   const sec = await api("/security");
-  const keysTable = html`<div class="table-wrap"><table class="cards">
+  const keysTable = html`<div class="table-wrap"><table class="cards"><caption class="vh">Clés du keystore</caption>
     <thead><tr><th>Clé</th><th>Usage</th><th>Algorithme</th><th>Origine</th><th>Empreinte</th></tr></thead>
     <tbody>${arr(s.keys).map((k) => html`<tr><td class="first mono">${k.label}</td><td data-label="Usage">${usage(k.label)}</td><td data-label="Algorithme">${k.algorithm}</td>
       <td data-label="Origine">${k.origin === "générée" ? html`<span class="tag ok">générée dans le HSM</span>` : k.origin === "importée" ? html`<span class="tag warn">importée</span>` : html`<span class="tag">logiciel</span>`}</td>
@@ -2563,10 +2828,10 @@ secTabs.keys = async (el, s) => {
       </section>
     </div></div>`;
   const reload = () => views.security($("#main"), "keys");
-  $("#cancel-hsm")?.addEventListener("click", (e) => act(e.currentTarget, () => api("/hsm/pending", { method: "DELETE" }), "Bascule annulée").then(reload));
+  $("#cancel-hsm")?.addEventListener("click", (e) => act(e.currentTarget, () => api("/hsm/pending", { method: "DELETE" }), "Bascule annulée").then((r) => r && reload()));
   $("#c-verify", el)?.addEventListener("click", async (e) => {
     const module = $("#c-mod", el).value, token = $("#c-token", el).value.trim(), pin = $("#c-pin", el).value;
-    if (!token || !pin) return toast("Indiquez le token et son PIN", true);
+    if (!token || !pin) return showError(e.currentTarget, "Indiquez le token et son PIN.");
     const rep = await act(e.currentTarget, () => api("/hsm/clone/verify", { method: "POST", body: { module, token, pin } }));
     $("#c-pin", el).value = "";
     if (!rep) return;
@@ -2574,10 +2839,10 @@ secTabs.keys = async (el, s) => {
     out.innerHTML = html`${notice(rep.ok ? "good" : "bad", html`<p><b>${rep.ok ? "Le token cible est une copie conforme." : "Le token cible ne convient pas."}</b></p>
       <ul class="check-list">${arr(rep.keys).map((k) => html`<li>${k.ok ? "✓" : "✗"} <code>${k.label}</code>${k.error ? html` : ${k.error}` : ""}</li>`)}
         <li>${rep.kek.ok ? "✓" : "✗"} KEK <code>${rep.kek.label}</code>${rep.kek.error ? html` : ${rep.kek.error}` : " : ouvre les données actuelles"}</li></ul>`)}
-      ${rep.ok ? html`<div class="row"><button class="primary" id="c-apply">Programmer la bascule</button></div>` : ""}`.s;
+      ${rep.ok ? html`<div class="row"><button class="primary" id="c-apply">Programmer la bascule</button></div>` : ""}`;
     $("#c-apply", out)?.addEventListener("click", (ev) => act(ev.currentTarget, () => api("/hsm/clone/apply", { method: "POST", body: { module, token } }), "Bascule programmée : redémarrez avec le PIN du nouveau token").then((r) => r && reload()));
   });
-  $$("[data-destroy]", el).forEach((b) => (b.onclick = () => confirm(`Détruire définitivement ${b.dataset.destroy} ? Cette action est irréversible.`) && act(b, () => api("/hsm/destroy-retired", { method: "POST", body: { path: b.dataset.destroy } }), "Copie détruite").then(reload)));
+  $$("[data-destroy]", el).forEach((b) => (b.onclick = async () => (await ask(`${b.dataset.destroy} sera détruit définitivement. Cette action est irréversible.`, { danger: true, ok: "Détruire", title: "Détruire la clé ?" })) && act(b, () => api("/hsm/destroy-retired", { method: "POST", body: { path: b.dataset.destroy } }), "Copie détruite").then((r) => r && reload())));
   bindCopy(el);
   if (wizard) bindWizard(el, s);
 };
@@ -2603,7 +2868,7 @@ function hsmWizard(s) {
         <form id="w-test" class="stack-s" autocomplete="off">
           <label class="field"><span>PIN utilisateur (CKU_USER)</span><input type="password" name="pin" autocomplete="off" required></label>
           <p class="muted small">Le PIN sert au test puis est effacé de la mémoire ; il n'est ni enregistré ni journalisé. Attention : plusieurs PIN erronés verrouillent la plupart des HSM.</p>
-          <label class="switch" id="w-final" hidden><input type="checkbox" name="final"><span><b>Tenter malgré le dernier essai</b><span class="muted">Le token signale qu'un PIN faux le verrouillera.</span></span></label>
+          <label class="switch" id="w-final" hidden><input type="checkbox" switch role="switch" name="final"><span><b>Tenter malgré le dernier essai</b><span class="muted">Le token signale qu'un PIN faux le verrouillera.</span></span></label>
           <div><button class="primary" type="submit">Tester la connexion</button></div>
         </form>
         <div id="w-report"></div>
@@ -2626,7 +2891,7 @@ function bindWizard(el, s) {
     step(1, "done"); step(2, "current"); step(3, "locked"); step(4, "locked");
     const toks = arr(r.tokens);
     $("#w-tokens").innerHTML = html`<p class="muted small">${r.module.manufacturer} ${r.module.description}, version ${r.module.version}, Cryptoki ${r.module.cryptoki}</p>
-      ${toks.length ? html`<div class="choices">${toks.map((t) => html`<label class="choice"><input type="radio" name="w-token" value="${t.label}" data-final="${t.pin_final_try ? 1 : ""}" ${t.pin_locked || !t.initialized ? new Raw("disabled") : ""}>
+      ${toks.length ? html`<div class="choices">${toks.map((t) => html`<label class="choice"><input type="radio" name="w-token" value="${t.label}" data-final="${t.pin_final_try ? 1 : ""}" ${t.pin_locked || !t.initialized ? raw("disabled") : ""}>
         <span><b>${t.label || "(sans label)"}</b><span class="muted">${t.manufacturer} ${t.model}, série ${t.serial}, slot ${t.slot}</span>
         ${t.pin_locked ? html`<span class="tag bad">PIN verrouillé</span>` : t.pin_final_try ? html`<span class="tag bad">dernier essai</span>` : t.pin_count_low ? html`<span class="tag warn">PIN déjà erroné</span>` : ""}
         ${!t.initialized ? html`<span class="tag warn">non initialisé</span>` : ""}</span></label>`)}</div>`
@@ -2649,9 +2914,10 @@ function bindWizard(el, s) {
       ${arr(rep.mechanisms).length ? html`<div class="mech mt">${arr(rep.mechanisms).map((m) => html`<span class="tag ${m.present ? "ok" : m.required ? "bad" : ""}">${m.name}${m.required ? "" : " (facultatif)"}</span>`)}</div>` : ""}`;
     if (r.ok) { step(3, "done"); step(4, "current"); }
   });
-  $("#w-apply")?.addEventListener("click", (e) => {
-    if (!confirm("Programmer la migration vers ce HSM au prochain démarrage de Rempart ?")) return;
-    act(e.currentTarget, () => api("/hsm/apply", { method: "POST", body: { module, token, kek_label: $("#w-kek").value } }), "Bascule programmée : fournissez le PIN puis redémarrez Rempart").then((r) => r && views.security($("#main"), "keys"));
+  $("#w-apply")?.addEventListener("click", async (e) => {
+    const b = e.currentTarget; // currentTarget est nul après l'attente
+    if (!(await ask("La migration vers ce HSM aura lieu au prochain démarrage de Rempart.", { ok: "Programmer", title: "Programmer la migration ?" }))) return;
+    act(b, () => api("/hsm/apply", { method: "POST", body: { module, token, kek_label: $("#w-kek").value } }), "Bascule programmée : fournissez le PIN puis redémarrez Rempart").then((r) => r && views.security($("#main"), "keys"));
   });
 }
 
@@ -2661,11 +2927,11 @@ const pwField = (label = "Votre mot de passe administrateur") => html`<label cla
 
 let quorumSeq = 0;
 secTabs.quorum = async (el) => {
-  clearInterval(refreshTimer);
+  stopRefresh();
   const seq = ++quorumSeq;
   const q = await api("/quorum");
   if (seq !== quorumSeq || !el.isConnected) return; // un rendu plus récent a pris la main
-  if (q.backend !== "software") { el.innerHTML = notice("plain", "Keystore HSM : le contrôle M sur N et la rotation se règlent sur le HSM lui-même (PED, quorum du constructeur).").s; return; }
+  if (q.backend !== "software") { el.innerHTML = notice("plain", "Keystore HSM : le contrôle M sur N et la rotation se règlent sur le HSM lui-même (PED, quorum du constructeur)."); return; }
   const s = q.status, op = q.op, use = q.usage || {};
   const on = s.quorum_enabled, gens = arr(s.generations);
   const reload = () => secTabs.quorum(el);
@@ -2690,7 +2956,7 @@ secTabs.quorum = async (el) => {
     <section class="panel stack">
       <div class="panel-head"><h2>Rotation des clés de chiffrement (KEK)</h2>
         <p>La KEK en service chiffre toute nouvelle donnée. Après une rotation, Rempart rechiffre l'état, les clés du journal et les clés de signature, puis retire l'ancienne génération ; sa destruction efface cryptographiquement les sauvegardes qu'elle chiffrait.</p></div>
-      <div class="table-wrap"><table class="cards"><thead><tr><th>Génération</th><th>Créée</th><th>État</th><th>Fichiers</th><th></th></tr></thead>
+      <div class="table-wrap"><table class="cards"><caption class="vh">Générations de la clé de chiffrement (KEK)</caption><thead><tr><th>Génération</th><th>Créée</th><th>État</th><th>Fichiers</th><th></th></tr></thead>
         <tbody>${gens.map((g) => html`<tr><td class="first">${g.gen}${g.legacy ? html` <span class="tag warn">héritée v1</span>` : ""}</td><td data-label="Créée">${day(g.created)}</td><td data-label="État">${genState(g)}</td>
           <td data-label="Fichiers">${use[g.gen] || 0}</td><td class="act">${!g.current && g.retired ? html`<button class="link danger" data-destroy-gen="${g.gen}">Détruire…</button>` : ""}</td></tr>`)}</tbody></table></div>
       ${gens.some((g) => g.legacy && g.current) ? notice("", "La KEK en service vient de l'ancien format (dérivée directement de la phrase de passe) : faites une rotation.") : ""}
@@ -2704,8 +2970,8 @@ secTabs.quorum = async (el) => {
   const guarded = async (btn, kind, extra, run) => {
     if (on) { await act(btn, () => api("/quorum/ops", { method: "POST", body: { kind, ...extra } }), "Demande ouverte : faites approuver par les dépositaires"); return reload(); }
     const box = $("#k-act", el);
-    box.innerHTML = html`<form class="fields reveal" id="k-confirm">${pwField()}<div class="row"><button class="primary" type="submit">Confirmer</button><button type="button" class="ghost" data-cancel>Annuler</button></div></form>`.s;
-    $("[data-cancel]", box).onclick = () => (box.innerHTML = "");
+    box.innerHTML = html`<form class="fields reveal" id="k-confirm">${pwField()}<div class="row"><button class="primary" type="submit">Confirmer</button><button type="button" class="ghost" data-cancel>Annuler</button></div></form>`;
+    $("[data-cancel]", box).onclick = () => box.replaceChildren();
     $("#k-confirm", box).onsubmit = async (e) => { e.preventDefault(); if (await act(e.submitter, () => run(e.target.password.value), "Fait")) reload(); };
   };
   $("#q-edit")?.addEventListener("click", (e) => {
@@ -2715,8 +2981,8 @@ secTabs.quorum = async (el) => {
   });
   const rot = (rotate) => async (e) => {
     const box = $("#k-act", el);
-    box.innerHTML = html`<form class="fields reveal" id="k-run">${pwField()}<div class="row"><button class="primary" type="submit">${rotate ? "Créer une nouvelle KEK" : "Réchiffrer"}</button><button type="button" class="ghost" data-cancel>Annuler</button></div></form>`.s;
-    $("[data-cancel]", box).onclick = () => (box.innerHTML = "");
+    box.innerHTML = html`<form class="fields reveal" id="k-run">${pwField()}<div class="row"><button class="primary" type="submit">${rotate ? "Créer une nouvelle KEK" : "Réchiffrer"}</button><button type="button" class="ghost" data-cancel>Annuler</button></div></form>`;
+    $("[data-cancel]", box).onclick = () => box.replaceChildren();
     $("#k-run", box).onsubmit = async (ev) => {
       ev.preventDefault();
       const r = await act(ev.submitter, () => api("/kek/rotate", { method: "POST", body: { password: ev.target.password.value, rotate } }));
@@ -2724,15 +2990,15 @@ secTabs.quorum = async (el) => {
       const pend = Object.entries(r.pending || {});
       toast(`Génération ${r.gen} : ${r.keys} clé(s) de signature et ${r.querylog} clé(s) du journal rechiffrées${arr(r.retired).length ? `, génération ${r.retired.join(", ")} retirée` : ""}`);
       await reload();
-      if (pend.length) $("#k-act", el).innerHTML = notice("", html`<p>Encore chiffrés par une ancienne génération :</p><ul>${pend.map(([g, f]) => html`<li>génération ${g} : ${f.join(", ")}</li>`)}</ul>`).s;
+      if (pend.length) $("#k-act", el).innerHTML = notice("", html`<p>Encore chiffrés par une ancienne génération :</p><ul>${pend.map(([g, f]) => html`<li>génération ${g} : ${f.join(", ")}</li>`)}</ul>`);
     };
   };
   $("#k-rotate").onclick = rot(true);
   $("#k-rewrap")?.addEventListener("click", rot(false));
   $("#k-policy").onclick = (e) => { const days = +$("#k-days", el).value; guarded(e.currentTarget, "policy", { days }, (password) => api("/kek/policy", { method: "POST", body: { password, days } })); };
-  $$("[data-destroy-gen]", el).forEach((b) => (b.onclick = () => {
+  $$("[data-destroy-gen]", el).forEach((b) => (b.onclick = async () => {
     const gen = +b.dataset.destroyGen;
-    if (!confirm(`Détruire la KEK de génération ${gen} ? Les sauvegardes qu'elle chiffre deviendront illisibles. C'est irréversible.`)) return;
+    if (!(await ask(`Les sauvegardes chiffrées par la KEK de génération ${gen} deviendront illisibles. C'est irréversible.`, { danger: true, ok: "Détruire", title: "Détruire la KEK ?" }))) return;
     guarded(b, "destroy", { gen }, (password) => api("/kek/destroy", { method: "POST", body: { password, gen } }));
   }));
   bindCopy(el);
@@ -2763,9 +3029,9 @@ function bindApproval(el, op, s, reload) {
   bindCopy(el);
   if (s.terminal_only && !$("#q-exec", el)) {
     // Suivi des approbations faites au terminal.
-    refreshTimer = setInterval(() => { if (!document.hidden && el.isConnected) reload(); }, 4000);
+    startRefresh(() => (el.isConnected ? reload() : stopRefresh()), 4000, () => el);
   }
-  $("#q-cancel", el).onclick = (e) => act(e.currentTarget, () => api("/quorum/ops", { method: "DELETE" }), "Demande abandonnée").then(reload);
+  $("#q-cancel", el).onclick = (e) => act(e.currentTarget, () => api("/quorum/ops", { method: "DELETE" }), "Demande abandonnée").then((r) => r && reload());
   const f = $("#q-approve", el);
   if (f) {
     f.passphrase.focus();
@@ -2780,7 +3046,7 @@ function bindApproval(el, op, s, reload) {
   const box = $("#q-exec", el);
   if (!box) return; // approbations attendues au terminal
   if (op.kind === "reconfigure") return showExecute(box, s, op, reload);
-  box.innerHTML = html`<form class="fields" id="q-run">${pwField()}<div class="row"><button class="primary ${op.kind === "destroy" ? "danger solid" : ""}" type="submit">Exécuter</button></div></form>`.s;
+  box.innerHTML = html`<form class="fields" id="q-run">${pwField()}<div class="row"><button class="primary ${op.kind === "destroy" ? "danger solid" : ""}" type="submit">Exécuter</button></div></form>`;
   $("#q-run", box).onsubmit = async (e) => {
     e.preventDefault();
     const body = { op_id: op.id, password: e.target.password.value, gen: op.gen, days: op.days };
@@ -2807,7 +3073,7 @@ const modeChoice = (mode) => html`<div class="choices">
   <label class="choice"><input type="radio" name="mode" value="auto" ${checked(mode !== "quorum")}><span><b>Démarrage automatique</b><span class="muted small">La phrase serveur ouvre le keystore ; le quorum protège les opérations sensibles et sert de secours.</span></span></label>
   <label class="choice"><input type="radio" name="mode" value="quorum" ${checked(mode === "quorum")}><span><b>Démarrage sous quorum</b><span class="muted small">Après chaque redémarrage, pas de DNS tant que M dépositaires ne se sont pas présentés.</span></span></label></div>`;
 const newRow = (name = "", withName = true) => html`<div class="fields custodian reveal" data-new>
-  <label class="field"><span>Nom</span><input name="cname" value="${name}" maxlength="64" required autocomplete="off" ${withName ? "" : new Raw("readonly")}></label>
+  <label class="field"><span>Nom</span><input name="cname" value="${name}" maxlength="64" required autocomplete="off" ${withName ? "" : raw("readonly")}></label>
   <label class="field"><span>Phrase de passe</span><input name="cpass" type="password" minlength="12" required autocomplete="new-password"></label>
   <label class="field"><span>Confirmation</span><input name="cpass2" type="password" required autocomplete="new-password"></label>
   ${withName ? html`<button type="button" class="link danger" data-rm>Retirer</button>` : html`<span></span>`}</div>`;
@@ -2815,7 +3081,7 @@ function bindThreshold(f, count) {
   const thr = $("[name=threshold]", f);
   const sync = () => {
     const n = count(), cur = +thr.value || 2;
-    thr.innerHTML = Array.from({ length: Math.max(0, n - 1) }, (_, i) => `<option ${i + 2 === Math.min(cur, n) ? "selected" : ""}>${i + 2}</option>`).join("");
+    thr.innerHTML = html`${Array.from({ length: Math.max(0, n - 1) }, (_, i) => html`<option ${selected(i + 2 === Math.min(cur, n))}>${i + 2}</option>`)}`;
     $(".thr-n", f).textContent = `sur ${n}`;
   };
   sync();
@@ -2830,9 +3096,9 @@ const readNew = (root) => {
   }
   return out;
 };
-const confirmMode = (mode, m) => mode !== "quorum" || confirm(`Mode quorum au démarrage : après chaque redémarrage, Rempart ne servira aucune requête DNS tant que ${m} dépositaires n'auront pas saisi leur phrase. Continuer ?`);
+const confirmMode = async (mode, m) => mode !== "quorum" || ask(`Après chaque redémarrage, Rempart ne servira aucune requête DNS tant que ${m} dépositaires n'auront pas saisi leur phrase.`, { ok: "Continuer", title: "Mode quorum au démarrage ?" });
 
-const termSwitch = (on) => html`<label class="switch"><input type="checkbox" name="terminal" ${checked(on)}><span><b>Approbations au terminal du serveur seulement</b><span class="muted">Les dépositaires approuvent avec <code>podman exec -it rempart rempart approve</code> : leur phrase ne passe jamais par le navigateur de l'administrateur. Recommandé dès que l'administrateur web n'est pas lui-même dépositaire.</span></span></label>`;
+const termSwitch = (on) => html`<label class="switch"><input type="checkbox" switch role="switch" name="terminal" ${checked(on)}><span><b>Approbations au terminal du serveur seulement</b><span class="muted">Les dépositaires approuvent avec <code>podman exec -it rempart rempart approve</code> : leur phrase ne passe jamais par le navigateur de l'administrateur. Recommandé dès que l'administrateur web n'est pas lui-même dépositaire.</span></span></label>`;
 const rekeyNote = html`<p class="muted small">Toute reconfiguration met en service une KEK neuve, rechiffre les données et détruit les générations précédentes : les sauvegardes antérieures du dossier de données deviennent illisibles, et une copie de l'ancien master.json ne déchiffre rien de ce qui s'écrit ensuite.</p>`;
 const reconfResult = (r) => {
   if (!r) return;
@@ -2852,19 +3118,19 @@ function showCeremony(box, s, reload) {
     ${termSwitch(false)}${rekeyNote}
     <div class="fields">${pwField()}</div>
     <div class="row"><button class="primary" type="submit">${icon("key")}Créer la clé racine et répartir les parts</button><button type="button" class="ghost" id="cer-cancel">Annuler</button></div>
-  </form>`.s;
+  </form>`;
   const f = $("#cer", box), rows = $("#rows", f);
   const sync = bindThreshold(f, () => $$(".custodian", rows).length);
   const bindRm = () => $$("[data-rm]", rows).forEach((b) => { b.disabled = $$(".custodian", rows).length <= 2; b.onclick = () => { b.closest(".custodian").remove(); sync(); bindRm(); }; });
   bindRm();
-  $("#add-c", f).onclick = () => { if ($$(".custodian", rows).length < 16) { rows.insertAdjacentHTML("beforeend", newRow().s); sync(); bindRm(); } };
+  $("#add-c", f).onclick = () => { if ($$(".custodian", rows).length < 16) { rows.insertAdjacentHTML("beforeend", newRow()); sync(); bindRm(); } };
   $("#cer-cancel", f).onclick = reload;
   f.onsubmit = async (e) => {
     e.preventDefault();
     let add;
-    try { add = readNew(rows); } catch (err) { return toast(err.message, true); }
+    try { add = readNew(rows); } catch (err) { return showError(e.submitter, err.message); }
     const body = { password: f.password.value, mode: f.mode.value, threshold: +f.threshold.value, terminal_only: f.terminal.checked, keep: [], add };
-    if (!confirmMode(body.mode, body.threshold)) return;
+    if (!(await confirmMode(body.mode, body.threshold))) return;
     const r = await act(e.submitter, () => api("/quorum/reconfigure", { method: "POST", body }));
     $$("input[type=password]", f).forEach((i) => (i.value = ""));
     reconfResult(r);
@@ -2878,20 +3144,20 @@ function showPlan(box, s, reload) {
   box.innerHTML = html`<form id="plan" class="stack reveal">
     <h3>Nouvelle configuration</h3>
     ${modeChoice(s.mode)}
-    <div class="stack-s">${s.custodians.map((c) => html`<label class="switch"><input type="checkbox" name="keep" value="${c.id}" checked><span><b>Conserver ${c.name}</b><span class="muted">garde sa phrase actuelle</span></span></label>`)}</div>
+    <div class="stack-s">${s.custodians.map((c) => html`<label class="check"><input type="checkbox" name="keep" value="${c.id}" checked><span><b>Conserver ${c.name}</b><span class="muted">garde sa phrase actuelle</span></span></label>`)}</div>
     <div id="adds" class="stack-s"></div>
     <p class="muted small">Moins de M nouveaux dépositaires par reconfiguration : leurs phrases passent par cette session, et aucun quorum ne doit pouvoir être formé sans au moins un dépositaire déjà en place.</p>
     <div class="row"><button type="button" id="add-n">+ Nouveau dépositaire</button><span class="grow"></span>
       <label class="row">Seuil M<select name="threshold"></select><span class="muted small thr-n"></span></label></div>
     ${termSwitch(s.terminal_only)}${rekeyNote}
     <div class="row"><button class="primary" type="submit">Demander l'approbation</button><button type="button" class="ghost" id="plan-cancel">Annuler</button></div>
-  </form>`.s;
+  </form>`;
   const f = $("#plan", box), adds = $("#adds", f);
   const count = () => $$("[name=keep]:checked", f).length + $$("[name=nname]", adds).length;
   const sync = bindThreshold(f, count);
   $$("[name=keep]", f).forEach((c) => (c.onchange = sync));
   $("#add-n", f).onclick = () => {
-    adds.insertAdjacentHTML("beforeend", html`<div class="row reveal"><label class="field grow"><span>Nom du nouveau dépositaire</span><input name="nname" maxlength="64" required></label><button type="button" class="link danger" data-rm>Retirer</button></div>`.s);
+    adds.insertAdjacentHTML("beforeend", html`<div class="row reveal"><label class="field grow"><span>Nom du nouveau dépositaire</span><input name="nname" maxlength="64" required></label><button type="button" class="link danger" data-rm>Retirer</button></div>`);
     $$("[data-rm]", adds).forEach((b) => (b.onclick = () => { b.closest(".row").remove(); sync(); }));
     sync();
   };
@@ -2899,7 +3165,7 @@ function showPlan(box, s, reload) {
   f.onsubmit = async (e) => {
     e.preventDefault();
     const plan = { mode: f.mode.value, threshold: +f.threshold.value, keep: $$("[name=keep]:checked", f).map((c) => c.value), add: $$("[name=nname]", adds).map((i) => i.value.trim()), terminal_only: f.terminal.checked };
-    if (plan.keep.length + plan.add.length && plan.keep.length + plan.add.length < 2) return toast("Il faut au moins deux dépositaires, ou aucun pour supprimer le quorum", true);
+    if (plan.keep.length + plan.add.length && plan.keep.length + plan.add.length < 2) return showError(e.submitter, "Il faut au moins deux dépositaires, ou aucun pour supprimer le quorum.");
     if (await act(e.submitter, () => api("/quorum/ops", { method: "POST", body: { kind: "reconfigure", plan } }), "Plan soumis : faites-le approuver")) reload();
   };
 }
@@ -2915,15 +3181,15 @@ function showExecute(box, s, op, reload) {
     ${arr(p.add).length ? html`<h3>Nouveaux dépositaires</h3><div class="stack-s">${arr(p.add).map((n) => newRow(n, false))}</div>` : ""}
     <div class="fields">${pwField()}</div>
     <div class="row"><button class="primary" type="submit">${icon("key")}Exécuter le plan approuvé</button></div>
-  </form>`.s;
+  </form>`;
   const f = $("#exe", box);
   f.onsubmit = async (e) => {
     e.preventDefault();
     let add;
-    try { add = readNew(f); } catch (err) { return toast(err.message, true); }
+    try { add = readNew(f); } catch (err) { return showError(e.submitter, err.message); }
     const keep = arr(p.keep).map((id) => ({ id, passphrase: ($(`[data-keep="${id}"]`, f) || {}).value || "" }));
     const body = { op_id: op.id, password: f.password.value, mode: p.mode, threshold: p.threshold, terminal_only: !!p.terminal_only, keep, add };
-    if (!confirmMode(p.mode, p.threshold)) return;
+    if (!(await confirmMode(p.mode, p.threshold))) return;
     const r = await act(e.submitter, () => api("/quorum/reconfigure", { method: "POST", body }));
     $$("input[type=password]", f).forEach((i) => (i.value = ""));
     reconfResult(r);
@@ -3003,7 +3269,7 @@ secTabs.tls = async (el) => {
             </div>
           </div>
           <p class="muted small" id="http01-note">http-01 : l'AC contacte Rempart depuis Internet sur ${t.http01_listen || ":80"} pendant la validation. Il faut publier le port 80 du conteneur et le rediriger sur la box. Les noms joker sont impossibles.</p>
-          <details ${ac.ca_bundle ? new Raw("open") : ""}><summary>AC interne : certificats de confiance</summary>
+          <details ${ac.ca_bundle ? raw("open") : ""}><summary>AC interne : certificats de confiance</summary>
             <label class="field"><span>AC racine et intermédiaires (PEM)</span><textarea class="short" name="ca" spellcheck="false" placeholder="-----BEGIN CERTIFICATE-----">${ac.ca_bundle || ""}</textarea>
             <span class="small">Pour joindre une AC dont le certificat n'est pas reconnu par le système, sans jamais désactiver la vérification TLS.</span></label>
           </details>
@@ -3018,12 +3284,12 @@ secTabs.tls = async (el) => {
               <label class="field"><span>Identifiant de clé (KID)</span><input name="kid" autocomplete="off" value="${ac.eab_key_id || ""}"></label>
               <label class="field"><span>Clé HMAC</span><input name="hmac" type="password" autocomplete="off" placeholder="base64url"></label></div>
               <p class="muted small">Fournis par l'AC (EJBCA, Horizon, ZeroSSL…). La clé HMAC sert à l'inscription puis est effacée ; elle n'est pas enregistrée.</p></details>
-            <label class="switch"><input type="checkbox" name="tos" required><span><b>J'accepte les conditions de l'autorité</b></span></label>
+            <label class="check"><input type="checkbox" name="tos" required><span><b>J'accepte les conditions de l'autorité</b></span></label>
             <div><button type="submit">${ac.account_url ? "Réinscrire le compte" : "Inscrire le compte"}</button></div>
           </form>
         </div>
         <hr>
-        <div class="row"><button class="primary" id="acme-issue" ${ac.account_url && !t.issuing ? "" : new Raw("disabled")}>${icon("cert")}Obtenir le certificat maintenant</button>
+        <div class="row"><button class="primary" id="acme-issue" ${ac.account_url && !t.issuing ? "" : raw("disabled")}>${icon("cert")}Obtenir le certificat maintenant</button>
           <span class="muted small">Renouvellement automatique au dernier tiers de la validité.</span></div>
         <p class="small" id="acme-progress" role="status" aria-live="polite">${t.issuing ? `En cours : ${t.issuing_step || "…"}` : ""}</p>
         ${ac.last_error ? notice("bad", html`<p><b>Dernière tentative le ${date(ac.last_attempt)} :</b> ${ac.last_error}</p>`) : isSet(ac.last_success) ? notice("good", html`<p>Dernier certificat obtenu le ${date(ac.last_success)}.</p>`) : ""}
@@ -3130,7 +3396,11 @@ secTabs.tls = async (el) => {
     bindCopy(el);
   };
   $("#csr-import").onsubmit = (e) => { e.preventDefault(); act(e.submitter, () => api("/tls/certificate", { method: "POST", body: { chain: e.target.chain.value } }), "Certificat installé").then((r) => r && reload()); };
-  $("#selfsigned").onclick = (e) => confirm("Remplacer le certificat actuel par un certificat auto-signé ?") && act(e.currentTarget, () => api("/tls/selfsigned", { method: "POST" }), "Certificat auto-signé en service").then(reload);
+  $("#selfsigned").onclick = async (e) => {
+    const b = e.currentTarget; // currentTarget est nul après l'attente
+    if (!(await ask("Les navigateurs et les appareils afficheront un avertissement tant que ce certificat n'est pas approuvé.", { ok: "Remplacer", title: "Passer au certificat auto-signé ?" }))) return;
+    act(b, () => api("/tls/selfsigned", { method: "POST" }), "Certificat auto-signé en service").then((r) => r && reload());
+  };
 };
 
 const scopeLabel = { read: "lecture", tls: "certificats", dnssec: "DNSSEC", admin: "administration", metrics: "métriques", backup: "sauvegarde", sync: "synchronisation" };
@@ -3139,7 +3409,7 @@ secTabs.tokens = async (el) => {
   el.innerHTML = html`<div class="grid wide">
     <section class="panel stack">
       <div class="panel-head"><h2>Jetons d'API</h2><p>Pour automatiser sans mot de passe : renouveler un certificat depuis votre PKI, publier un DS, lire l'état. Chaque appel est consigné dans l'audit sous le nom du jeton.</p></div>
-      ${toks.length ? html`<div class="table-wrap"><table class="cards">
+      ${toks.length ? html`<div class="table-wrap"><table class="cards"><caption class="vh">Jetons d'API</caption>
         <thead><tr><th>Nom</th><th>Portées</th><th>Expire</th><th>Dernière utilisation</th><th></th></tr></thead>
         <tbody>${toks.map((k) => html`<tr><td class="first">${k.name}</td><td data-label="Portées">${arr(k.scopes).map((s) => html`<span class="tag">${scopeLabel[s] || s}</span> `)}</td>
           <td data-label="Expire" class="small">${isSet(k.expires) ? day(k.expires) : "jamais"}</td><td data-label="Utilisé" class="small">${date(k.last_used)}</td>
@@ -3151,13 +3421,13 @@ secTabs.tokens = async (el) => {
       <form id="tok" class="stack-s">
         <label class="field"><span>Nom</span><input name="name" placeholder="ansible-pki" required maxlength="64"></label>
         <div class="field"><span>Portées</span>
-          ${Object.entries(scopeLabel).map(([k, v]) => html`<label class="switch"><input type="checkbox" name="scope" value="${k}" ${checked(k === "read")}><span><b>${v}</b><span class="muted">${{ read: "consulter l'état, les zones, les certificats", tls: "certificat : CSR, import, ACME", dnssec: "rotations et DS des zones", admin: "toutes les modifications (sauf jetons, mot de passe et HSM)", metrics: "lire /metrics (Prometheus), rien d'autre", backup: "télécharger une sauvegarde complète, rien d'autre (non inclus dans « administration »)", sync: "pour une réplique : lire la configuration à recopier (non inclus dans « administration »)" }[k]}</span></span></label>`)}</div>
+          ${Object.entries(scopeLabel).map(([k, v]) => html`<label class="check"><input type="checkbox" name="scope" value="${k}" ${checked(k === "read")}><span><b>${v}</b><span class="muted">${{ read: "consulter l'état, les zones, les certificats", tls: "certificat : CSR, import, ACME", dnssec: "rotations et DS des zones", admin: "toutes les modifications (sauf jetons, mot de passe et HSM)", metrics: "lire /metrics (Prometheus), rien d'autre", backup: "télécharger une sauvegarde complète, rien d'autre (non inclus dans « administration »)", sync: "pour une réplique : lire la configuration à recopier (non inclus dans « administration »)" }[k]}</span></span></label>`)}</div>
         <label class="field"><span>Validité (jours, 0 = sans expiration)</span><input name="days" type="number" min="0" max="730" value="90"></label>
         <div><button class="primary" type="submit">Créer le jeton</button></div>
       </form>
     </section></div>`;
   const reload = () => secTabs.tokens(el);
-  $$("[data-revoke]", el).forEach((b) => (b.onclick = () => confirm(`Révoquer le jeton « ${b.dataset.name} » ?`) && act(b, () => api("/tokens/" + b.dataset.revoke, { method: "DELETE" }), "Jeton révoqué").then(reload)));
+  $$("[data-revoke]", el).forEach((b) => (b.onclick = async () => (await ask(`Les scripts qui utilisent le jeton « ${b.dataset.name} » seront refusés.`, { danger: true, ok: "Révoquer", title: "Révoquer le jeton ?" })) && act(b, () => api("/tokens/" + b.dataset.revoke, { method: "DELETE" }), "Jeton révoqué").then((r) => r && reload())));
   $("#tok").onsubmit = async (e) => {
     e.preventDefault();
     const f = new FormData(e.target);
@@ -3304,14 +3574,14 @@ secTabs.identity = async (el) => {
       ? notice(r.role ? "good" : "bad", html`<p><b>${r.name || r.dn}</b> trouvé : <code>${r.dn}</code></p>
           <p>Groupes (${arr(r.groups).length}) : ${arr(r.groups).length ? arr(r.groups).map((g) => html`<code>${g}</code> `) : "aucun"}</p>
           <p>Rôle dans Rempart : <b>${r.role ? roleNames[r.role] : "aucun — cet utilisateur ne pourra pas se connecter"}</b></p>`)
-      : notice("good", "Connexion TLS et compte de service acceptés par l'annuaire.")).s;
+      : notice("good", "Connexion TLS et compte de service acceptés par l'annuaire."));
   };
   $("#o-test", el).onclick = async (e) => {
     const r = await act(e.currentTarget, () => api("/identity/oidc/test", { method: "POST", body: { oidc: oidcBody() } }));
     if (!r) return;
     $("#o-res", el).innerHTML = notice("good", html`<p>Fournisseur trouvé : <code>${r.issuer}</code></p>
       <p class="small">Autorisation : <code>${r.authorization_endpoint}</code><br>Jetons : <code>${r.token_endpoint}</code><br>Déconnexion : ${r.end_session_endpoint ? html`<code>${r.end_session_endpoint}</code>` : "non annoncée"}<br>Algorithmes : ${arr(r.algorithms).join(", ") || "non annoncés"}</p>
-      <p class="small muted">Pour vérifier les rôles, enregistrez puis connectez-vous avec le bouton depuis une fenêtre privée : le résultat est consigné dans le journal d'audit.</p>`).s;
+      <p class="small muted">Pour vérifier les rôles, enregistrez puis connectez-vous avec le bouton depuis une fenêtre privée : le résultat est consigné dans le journal d'audit.</p>`);
   };
   f.onsubmit = async (e) => {
     e.preventDefault();
@@ -3326,7 +3596,7 @@ secTabs.audit = async (el) => {
   el.innerHTML = html`<section class="panel stack">
     <div class="panel-head"><h2>Journal d'audit signé</h2><button id="verify">${icon("audit")}Vérifier l'intégrité</button></div>
     ${notice(a.verify.ok ? "good" : "bad", a.verify.ok ? html`<p>Intégrité vérifiée : ${n(a.verify.count)} événements chaînés et signés (clé ${a.verify.key_fingerprint}).</p>` : html`<p>Altération détectée : ${a.verify.problem}</p>`)}
-    <div class="table-wrap"><table class="cards">
+    <div class="table-wrap"><table class="cards"><caption class="vh">Journal d'audit signé</caption>
       <thead><tr><th>Action</th><th class="num">N°</th><th>Date</th><th>Acteur</th><th>Détail</th></tr></thead>
       <tbody>${arr(a.events).map((e) => html`<tr><td class="first">${e.action}</td><td data-label="N°" class="num">${e.seq}</td><td class="small" data-label="Date">${date(e.time)}</td><td data-label="Acteur">${e.actor}</td><td class="small" data-label="Détail">${e.detail}</td></tr>`)}</tbody>
     </table></div>
@@ -3491,7 +3761,7 @@ setTabs.resolution = async (el) => {
       <div><button class="primary" type="submit">Appliquer</button></div>
     </form>`;
     $$("[name=profile]", el).forEach((x) => (x.onchange = () => { profile = x.value; draw(); }));
-    $("#addfwd")?.addEventListener("click", () => $("#fwd").insertAdjacentHTML("beforeend", fwdRow({ domain: "", servers: [] }).s));
+    $("#addfwd")?.addEventListener("click", () => $("#fwd").insertAdjacentHTML("beforeend", fwdRow({ domain: "", servers: [] })));
     $("#rf").onsubmit = (e) => {
       e.preventDefault();
       const f = e.target;
@@ -3547,7 +3817,7 @@ async function passkeyPanel(el) {
     </form>`;
   el.innerHTML = html`<div class="panel-head"><h2>Clés d'accès</h2>${keys.length ? html`<span class="tag ok">${keys.length} clé(s)</span>` : html`<span class="tag">Aucune</span>`}
       <p>Passkeys et clés de sécurité FIDO2 (YubiKey, Windows Hello, Touch ID, téléphone). Elles remplacent le code à 6 chiffres, et permettent de se connecter sans mot de passe quand la clé vérifie votre PIN ou votre empreinte. Impossible à hameçonner : la clé ne répond qu'à ce site.</p></div>
-    ${keys.length ? html`<div class="table-wrap"><table class="cards"><thead><tr><th>Nom</th><th>Site</th><th>Ajoutée</th><th>Dernière utilisation</th><th></th></tr></thead><tbody>
+    ${keys.length ? html`<div class="table-wrap"><table class="cards"><caption class="vh">Clés d'accès</caption><thead><tr><th>Nom</th><th>Site</th><th>Ajoutée</th><th>Dernière utilisation</th><th></th></tr></thead><tbody>
       ${keys.map((k) => html`<tr><td class="first">${k.name}${k.synced ? html` <span class="tag">synchronisée</span>` : ""}</td><td data-label="Site" class="mono small">${k.rp_id}</td>
         <td data-label="Ajoutée" class="small">${day(k.created)}</td><td data-label="Dernière utilisation" class="small">${isSet(k.last_used) ? day(k.last_used) : "jamais"}</td>
         <td><button class="danger ghost" data-pk-del="${k.id}">Retirer</button></td></tr>`)}</tbody></table></div>` : ""}
@@ -3557,10 +3827,10 @@ async function passkeyPanel(el) {
     <p class="muted small">Une clé est liée au nom utilisé pour ouvrir l'interface (${location.hostname}). Tout perdu : redémarrez une fois avec <code>REMPART_RESET_OTP=1</code>.</p>`;
   const box = $("#pk-act", el);
   const open = (id, label, danger, run) => {
-    box.innerHTML = auth(id, label, danger).s;
+    box.innerHTML = auth(id, label, danger);
     const f = $("#" + id, box);
     (f.name || f.password).focus();
-    $("[data-cancel]", f).onclick = () => (box.innerHTML = "");
+    $("[data-cancel]", f).onclick = () => box.replaceChildren();
     f.onsubmit = async (e) => { e.preventDefault(); await run(f, e.submitter); };
   };
   $("#pk-add", el) && ($("#pk-add", el).onclick = () => open("pk-new", "Enregistrer", false, async (f, btn) => {
@@ -3571,7 +3841,7 @@ async function passkeyPanel(el) {
       await api("/passkeys/finish", { method: "POST", body: { ...body, name: f.name.value.trim() } });
       toast("Clé d'accès ajoutée");
       passkeyPanel(el);
-    } catch (err) { toast(passkeyError(err), true); btn.disabled = false; }
+    } catch (err) { showError(btn, passkeyError(err)); btn.disabled = false; }
   }));
   $$("[data-pk-del]", el).forEach((b) => (b.onclick = () => open("pk-del", "Retirer la clé", true, async (f, btn) => {
     const r = await act(btn, () => api(`/passkeys/${encodeURIComponent(b.dataset.pkDel)}/delete`, { method: "POST", body: { password: f.password.value, code: f.code ? f.code.value : "" } }), "Clé retirée");
@@ -3597,10 +3867,10 @@ async function otpPanel(el) {
       <p class="muted small">Les jetons d'API ne sont pas concernés : ils restent un second moyen d'accès, à protéger comme tel.</p>`;
     const box = $("#otp-act", el);
     const open = (id, label, danger, path, done) => {
-      box.innerHTML = reauth(id, label, danger).s;
+      box.innerHTML = reauth(id, label, danger);
       const f = $("#" + id, box);
       f.password.focus();
-      $("[data-cancel]", f).onclick = () => (box.innerHTML = "");
+      $("[data-cancel]", f).onclick = () => box.replaceChildren();
       f.onsubmit = async (e) => {
         e.preventDefault();
         const r = await act(e.submitter, () => api(path, { method: "POST", body: { password: f.password.value, code: f.code.value } }));
@@ -3651,7 +3921,7 @@ function showCodes(el, codes, done) {
     <p>Conservez-les hors de cet ordinateur (gestionnaire de mots de passe, papier). Ils remplacent l'application si vous la perdez, une fois chacun. Ils ne seront plus affichés.</p></div>
     <ul class="codes reveal">${codes.map((c) => html`<li><code>${c}</code></li>`)}</ul>
     <div class="row"><button data-copy="${text}" data-copied="Codes copiés">${icon("copy")}Copier</button><button id="dl">${icon("download")}Télécharger (.txt)</button></div>
-    <label class="switch"><input type="checkbox" id="kept"><span><b>J'ai mis ces codes en lieu sûr</b></span></label>
+    <label class="check"><input type="checkbox" id="kept"><span><b>J'ai mis ces codes en lieu sûr</b></span></label>
     <div class="row"><button class="primary" id="fin" disabled>Terminer</button></div>`;
   bindCopy(el);
   $("#dl", el).onclick = () => {
@@ -3666,5 +3936,11 @@ function showCodes(el, codes, done) {
 }
 
 // ---- démarrage ----
-try { const th = localStorage.getItem("rempart-theme"); if (th) document.documentElement.dataset.theme = th; } catch {}
+// Après chaque rendu : tableaux et blocs défilants accessibles au clavier,
+// champs prêts pour la validation annoncée (ui-shared.js).
+initValidation(announce);
+onRender(app, (root) => {
+  watchScrollers(root, ".table-wrap");
+  markFields(root);
+});
 route();

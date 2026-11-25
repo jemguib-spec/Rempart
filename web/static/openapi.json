@@ -13,7 +13,7 @@
   "tags": [
     {
       "name": "Authentification",
-      "description": "Ouvrir et fermer une session. Le cookie rempart_session (HttpOnly, SameSite=Strict) sert ensuite à toutes les routes. Toute requête POST, PUT, PATCH ou DELETE faite avec ce cookie doit porter l'en-tête X-Rempart: 1 (protection CSRF) ; un jeton porteur en est dispensé."
+      "description": "Ouvrir et fermer une session. Le cookie de session (HttpOnly, SameSite=Strict ; __Host-rempart_session en HTTPS, rempart_session en HTTP) sert ensuite à toutes les routes. Toute requête POST, PUT, PATCH ou DELETE faite avec ce cookie doit porter l'en-tête X-Rempart: 1 (protection CSRF) ; un jeton porteur en est dispensé."
     },
     {
       "name": "Jetons d'API",
@@ -273,7 +273,7 @@
           "Authentification"
         ],
         "summary": "Terminer une connexion par clé d'accès",
-        "description": "Portée : public — Sans authentification.",
+        "description": "404 si la clé n'est pas enregistrée dans Rempart (supprimée ici, encore dans le gestionnaire de clés) : la page le signale au navigateur (signalUnknownCredential), qui cesse de la proposer. 401 pour une signature refusée.\n\nPortée : public — Sans authentification.",
         "operationId": "post_api_login_passkey_finish",
         "x-rempart-scope": "public",
         "parameters": [],

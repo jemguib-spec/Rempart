@@ -108,11 +108,12 @@ func TestPasskeyFlows(t *testing.T) {
 		t.Fatal("session non ouverte")
 	}
 
-	// Une autre clé, inconnue, est refusée.
+	// Une autre clé, inconnue, est refusée en 404 : la page peut demander au
+	// gestionnaire de clés de l'oublier (signalUnknownCredential).
 	other := softkey.New()
 	_, opts = e.doHost(e.client(), "POST", "/api/login/passkey/begin", map[string]string{})
-	if r, _ := e.doHost(e.client(), "POST", "/api/login/passkey/finish", other.Get(opts["challenge"].(string), "localhost", origin)); r.StatusCode == 200 {
-		t.Fatal("clé inconnue acceptée")
+	if r, _ := e.doHost(e.client(), "POST", "/api/login/passkey/finish", other.Get(opts["challenge"].(string), "localhost", origin)); r.StatusCode != 404 {
+		t.Fatalf("clé inconnue : statut %d, 404 attendu", r.StatusCode)
 	}
 
 	// Suppression : mot de passe exigé.

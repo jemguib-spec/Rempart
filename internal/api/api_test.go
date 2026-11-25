@@ -65,6 +65,11 @@ func TestAuthAndCSRF(t *testing.T) {
 	if r := do("GET", "/", "", false, nil); r.Header.Get("Content-Security-Policy") == "" || r.Header.Get("X-Frame-Options") != "DENY" {
 		t.Fatal("en-têtes de sécurité manquants")
 	}
+	// Trusted Types : seule la politique « rempart » de app.js peut écrire du HTML.
+	if csp := do("GET", "/", "", false, nil).Header.Get("Content-Security-Policy"); !strings.Contains(csp, "require-trusted-types-for 'script'") ||
+		!strings.Contains(csp, "trusted-types rempart") || !strings.Contains(csp, "object-src 'none'") {
+		t.Fatalf("CSP incomplète : %s", csp)
+	}
 	// brute force lockout after 5 failures
 	for i := 0; i < 5; i++ {
 		do("POST", "/api/login", `{"username":"admin","password":"x"}`, true, nil)
@@ -74,5 +79,19 @@ func TestAuthAndCSRF(t *testing.T) {
 	}
 	if rep := al.Verify(); !rep.OK || rep.Count < 7 {
 		t.Fatalf("les connexions doivent être auditées: %+v", rep)
+	}
+}
+
+// TestCookiePrefixes : en HTTPS, la session porte __Host- (Secure, Path=/,
+// sans Domain imposés par le navigateur) et le cookie OIDC __Secure-.
+func TestCookiePrefixes(t *testing.T) {
+	if n := (&API{SecureCk: true}).sessionCookie(); n != "__Host-rempart_session" {
+		t.Fatalf("session en HTTPS : %q", n)
+	}
+	if n := (&API{SecureCk: true}).oidcCookieName(); n != "__Secure-rempart_oidc" {
+		t.Fatalf("OIDC en HTTPS : %q", n)
+	}
+	if n := (&API{}).sessionCookie(); n != cookieName {
+		t.Fatalf("session en HTTP : %q", n)
 	}
 }

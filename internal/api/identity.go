@@ -52,6 +52,16 @@ const (
 	ldapParallel = 4
 )
 
+// oidcCookieName lie le retour du fournisseur OIDC au navigateur qui a
+// lancé la connexion. Limité à /api/oidc/, il ne peut pas porter __Host-
+// (qui impose Path=/) ; en HTTPS il prend __Secure-, qui impose Secure.
+func (a *API) oidcCookieName() string {
+	if a.SecureCk {
+		return "__Secure-" + oidcCookie
+	}
+	return oidcCookie
+}
+
 func roleAllows(role, scope string) bool {
 	switch role {
 	case RoleAdmin:
@@ -142,7 +152,7 @@ func cleanName(s string) string {
 
 func (a *API) me(w http.ResponseWriter, r *http.Request, user string) {
 	out := map[string]any{"user": user, "role": "", "source": "token", "name": user}
-	if c, err := r.Cookie(cookieName); err == nil && !hasBearer(r) {
+	if c, err := r.Cookie(a.sessionCookie()); err == nil && !hasBearer(r) {
 		if p, ok := a.sess.get(c.Value); ok {
 			out["name"], out["role"], out["source"] = p.Name, p.Role, p.Source
 		}
@@ -310,7 +320,7 @@ func (a *API) oidcLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	// SameSite=Lax : le retour depuis Keycloak est une navigation venant d'un
 	// autre site, un cookie Strict n'y serait pas joint.
-	http.SetCookie(w, &http.Cookie{Name: oidcCookie, Value: binding, Path: "/api/oidc/", HttpOnly: true,
+	http.SetCookie(w, &http.Cookie{Name: a.oidcCookieName(), Value: binding, Path: "/api/oidc/", HttpOnly: true,
 		Secure: a.SecureCk, SameSite: http.SameSiteLaxMode, MaxAge: int(oidcPendTTL.Seconds())})
 	w.Header().Set("Cache-Control", "no-store")
 	http.Redirect(w, r, p.AuthURL(st, nonce, verifier, c.RequiredACR), http.StatusFound)
@@ -318,7 +328,7 @@ func (a *API) oidcLogin(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) oidcCallback(w http.ResponseWriter, r *http.Request) {
 	ip := a.clientIP(r)
-	http.SetCookie(w, &http.Cookie{Name: oidcCookie, Value: "", Path: "/api/oidc/", MaxAge: -1, HttpOnly: true, Secure: a.SecureCk, SameSite: http.SameSiteLaxMode})
+	http.SetCookie(w, &http.Cookie{Name: a.oidcCookieName(), Value: "", Path: "/api/oidc/", MaxAge: -1, HttpOnly: true, Secure: a.SecureCk, SameSite: http.SameSiteLaxMode})
 	if a.guard.blocked(ip) > 0 {
 		loginRedirect(w, r, "bloque")
 		return
@@ -328,7 +338,7 @@ func (a *API) oidcCallback(w http.ResponseWriter, r *http.Request) {
 	pend := a.idp.pending[hashToken(q.Get("state"))]
 	delete(a.idp.pending, hashToken(q.Get("state"))) // usage unique
 	a.idp.mu.Unlock()
-	ck, err := r.Cookie(oidcCookie)
+	ck, err := r.Cookie(a.oidcCookieName())
 	if pend == nil || time.Now().After(pend.expires) || err != nil ||
 		subtle.ConstantTimeCompare([]byte(hashToken(ck.Value)), []byte(pend.binding)) != 1 {
 		a.guard.failed(ip)
