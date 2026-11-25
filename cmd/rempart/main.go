@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -309,6 +310,11 @@ func run(cfgPath string) error {
 	lastResolvers := store.Get().Resolvers
 	apply := func(st state.State) {
 		srv.SetSettings(st)
+		// Mode « page » : adresse de Rempart donnée aux noms bloqués (une
+		// adresse vide ou invalide fait répondre comme « adresse nulle »).
+		v4, _ := netip.ParseAddr(st.BlockPage.IPv4)
+		v6, _ := netip.ParseAddr(st.BlockPage.IPv6)
+		srv.SetBlockPage(v4, v6)
 		prov.Set(st.TSIGKeys)
 		// L'API valide les groupes avant de les enregistrer ; une entrée
 		// devenue invalide (catalogue changé) est seulement écartée.
@@ -406,6 +412,8 @@ func run(cfgPath string) error {
 	// et, si l'administrateur le choisit, l'écoute DoH.
 	webHandler := a.Handler(cfg.Web.SessionTTL.Duration)
 	enc.SetWebHandler(webHandler)
+	// Page de blocage : sur la même écoute DoH, pour les seuls noms bloqués.
+	enc.SetBlockPageHandler(a.BlockPageHandler())
 	ws := &http.Server{Addr: cfg.Web.Listen, Handler: webHandler,
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 3 * time.Minute,
 		IdleTimeout: 2 * time.Minute, MaxHeaderBytes: 32 << 10}

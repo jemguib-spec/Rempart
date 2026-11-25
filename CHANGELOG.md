@@ -2,6 +2,15 @@
 
 ## Non publié
 
+### Page de blocage et demandes de déblocage
+
+- **Nouvelle réponse aux domaines bloqués : « Page d'explication »** (Réglages → Blocage, `blocking_mode: page`). Un nom bloqué reçoit l'adresse de Rempart (IPv4, IPv6 facultative, saisies dans l'interface ; propres à chaque instance). Les requêtes HTTPS/SVCB reçoivent une réponse vide, pour que le navigateur ne cherche pas ailleurs. Sans adresse configurée, la réponse reste l'adresse nulle.
+- **Aucun port supplémentaire** : la page est servie par l'écoute DoH déjà ouverte (443). Seul un nom que Rempart vient de bloquer en mode page (15 min, 4096 noms au plus, en mémoire) la reçoit, et seulement depuis les réseaux autorisés (`dns.allowed_clients`) ; depuis Internet, 404. Sous un nom bloqué, tout chemin donne la page : jamais l'interface, l'API ni l'aide. `/dns-query` reste servi.
+- **La page n'expose rien d'autre** : le nom bloqué et, si l'option est active, un formulaire. Ni la règle ou la liste en cause, ni le groupe, ni la version, ni lien vers l'interface. Aucun script ; CSP `default-src 'none'`, feuille de style autorisée par son empreinte, `form-action 'self'`, `no-store`. Les sous-ressources (scripts et images des régies) reçoivent un 403 vide.
+- **Demande de déblocage** depuis la page : motif facultatif (500 caractères). Seuls les envois de la page elle-même sont acceptés (`Origin`, `Sec-Fetch-Site`) ; 5 demandes par appareil et par 10 minutes, 200 en attente au plus ; une demande répétée est comptée, pas dupliquée. L'appareil est désigné comme dans le journal (pseudonyme du jour par défaut), avec son groupe. Demandes scellées avec l'état.
+- **Filtrage → Demandes** : accepter ajoute une exception au groupe de l'appareil ou à Ma liste, retire les demandes satisfaites et vide le cache ; refuser supprime la demande. Les deux sont inscrits dans l'audit. Nouvelles routes `GET/PUT /api/blockpage`, `GET /api/unblock-requests`, `POST /api/unblock-requests/{id}/approve`, `DELETE /api/unblock-requests/{id}`.
+- Limite : le navigateur reçoit le certificat de Rempart, qui ne porte pas le nom du site bloqué. Il affiche d'abord un avertissement, et la page ne peut pas s'afficher pour un site HSTS. Les applications échouent comme avec l'adresse nulle.
+
 ### Rapidité et changements de réseau
 
 - **DoT et TCP traitent les requêtes d'une connexion en parallèle** (RFC 7766 §6.2.1.1), jusqu'à 64 par connexion, les réponses partant dans l'ordre où elles sont prêtes. La bibliothèque DNS attendait la réponse d'une requête avant de lire la suivante ; or le DNS privé d'Android envoie tout sur une seule connexion DoT : une requête lente retenait toutes celles du téléphone. Les requêtes signées TSIG et les transferts de zone restent traités une par une. À la fermeture, les réponses en cours partent encore (6 s au plus).

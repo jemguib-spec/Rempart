@@ -103,8 +103,10 @@ type Server struct {
 	// dotAdmit : le jeton d'appareil lu dans le nom TLS de DoT fait servir
 	// le client hors des réseaux autorisés (Réglages → Chiffrement).
 	dotAdmit atomic.Bool
-	servers  []*dns.Server
-	mu       sync.Mutex
+	// page : mode de blocage « page » (adresses de Rempart, noms récents).
+	page    blockPage
+	servers []*dns.Server
+	mu      sync.Mutex
 }
 
 func (s *Server) SetSettings(st state.State) {
@@ -831,9 +833,13 @@ func (s *Server) blocked(req *dns.Msg, mode string) *dns.Msg {
 	if mode == "refused" {
 		return reply(req, dns.RcodeRefused)
 	}
+	if mode == "page" {
+		if r, ok := s.pageAnswer(req); ok {
+			return r
+		}
+	}
 	r := reply(req, dns.RcodeSuccess)
-	soa := &dns.SOA{Hdr: dns.RR_Header{Name: q.Name, Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: blockedTTL},
-		Ns: "rempart.blocked.", Mbox: "rempart.blocked.", Serial: 1, Refresh: 1800, Retry: 900, Expire: 604800, Minttl: blockedTTL}
+	soa := blockedSOA(q.Name)
 	if mode == "nxdomain" {
 		r.Rcode = dns.RcodeNameError
 		r.Ns = []dns.RR{soa}

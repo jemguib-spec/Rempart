@@ -1500,6 +1500,159 @@
         }
       }
     },
+    "/api/blockpage": {
+      "get": {
+        "tags": [
+          "Réglages"
+        ],
+        "summary": "Page de blocage : adresses et état",
+        "description": "active : le mode de blocage est « page ». doh : écoute qui sert la page (aucun autre port). pending : demandes de déblocage en attente.\n\nPortée : read — Consultation. Tout jeton (sauf backup/sync seuls) et tout rôle.",
+        "operationId": "get_api_blockpage",
+        "x-rempart-scope": "read",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Succès",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ipv4": {
+                      "type": "string"
+                    },
+                    "ipv6": {
+                      "type": "string"
+                    },
+                    "requests": {
+                      "type": "boolean"
+                    },
+                    "active": {
+                      "type": "boolean"
+                    },
+                    "doh": {
+                      "type": "object",
+                      "properties": {
+                        "listen": {
+                          "type": "string"
+                        },
+                        "path": {
+                          "type": "string"
+                        },
+                        "enabled": {
+                          "type": "boolean"
+                        },
+                        "running": {
+                          "type": "boolean"
+                        }
+                      }
+                    },
+                    "pending": {
+                      "type": "integer"
+                    }
+                  }
+                },
+                "example": {
+                  "ipv4": "192.168.1.2",
+                  "ipv6": "",
+                  "requests": true,
+                  "active": true,
+                  "doh": {
+                    "listen": ":443",
+                    "path": "/dns-query",
+                    "enabled": true,
+                    "running": true
+                  },
+                  "pending": 1
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "Réglages"
+        ],
+        "summary": "Régler la page de blocage",
+        "description": "En mode « page », les noms bloqués reçoivent l'adresse de Rempart ; le navigateur y trouve, sur l'écoute DoH, une page qui ne montre que le nom bloqué et, si requests est vrai, un formulaire de demande de déblocage. Seuls les réseaux autorisés (dns.allowed_clients) la reçoivent. Sans IPv4, les noms bloqués reçoivent l'adresse nulle. Propre à chaque instance (non répliqué).\n\nPortée : admin — Modification de la configuration. Jeton « admin », rôle opérateur ou administrateur.",
+        "operationId": "put_api_blockpage",
+        "x-rempart-scope": "admin",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Succès",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "ipv4": {
+                    "type": "string"
+                  },
+                  "ipv6": {
+                    "type": "string"
+                  },
+                  "requests": {
+                    "type": "boolean"
+                  }
+                }
+              },
+              "example": {
+                "ipv4": "192.168.1.2",
+                "ipv6": "fd00::2",
+                "requests": true
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/encryption": {
       "get": {
         "tags": [
@@ -2657,6 +2810,232 @@
             }
           }
         }
+      }
+    },
+    "/api/unblock-requests": {
+      "get": {
+        "tags": [
+          "Ma liste (règles)"
+        ],
+        "summary": "Demandes de déblocage en attente",
+        "description": "Envoyées depuis la page de blocage. client : appareil désigné selon Réglages → Confidentialité. count : demandes répétées. Les plus récentes d'abord.\n\nPortée : read — Consultation. Tout jeton (sauf backup/sync seuls) et tout rôle.",
+        "operationId": "get_api_unblock_requests",
+        "x-rempart-scope": "read",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Succès",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "domain": {
+                        "type": "string"
+                      },
+                      "message": {
+                        "type": "string"
+                      },
+                      "client": {
+                        "type": "string"
+                      },
+                      "group_id": {
+                        "type": "string"
+                      },
+                      "group_name": {
+                        "type": "string"
+                      },
+                      "count": {
+                        "type": "integer"
+                      },
+                      "created": {
+                        "type": "string"
+                      },
+                      "updated": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                "example": [
+                  {
+                    "id": "3f9c…",
+                    "domain": "site.example",
+                    "message": "Pour un exposé",
+                    "client": "client-1a2b3c4d5e",
+                    "group_id": "g1",
+                    "group_name": "Enfants",
+                    "count": 1,
+                    "created": "2026-11-25T10:00:00Z",
+                    "updated": "2026-11-25T10:00:00Z"
+                  }
+                ]
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/unblock-requests/{id}/approve": {
+      "post": {
+        "tags": [
+          "Ma liste (règles)"
+        ],
+        "summary": "Accepter une demande de déblocage",
+        "description": "Ajoute une exception pour le nom demandé : au groupe de l'appareil (scope group) ou à Ma liste (scope global). Les demandes satisfaites disparaissent. Sur une réplique : 409.\n\nPortée : admin — Modification de la configuration. Jeton « admin », rôle opérateur ou administrateur.",
+        "operationId": "post_api_unblock_requests_id_approve",
+        "x-rempart-scope": "admin",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "3f9c…"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Succès",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "domain": {
+                      "type": "string"
+                    },
+                    "where": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "domain": "site.example",
+                  "where": "groupe Enfants"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "scope": {
+                    "type": "string"
+                  }
+                }
+              },
+              "example": {
+                "scope": "group"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/unblock-requests/{id}": {
+      "delete": {
+        "tags": [
+          "Ma liste (règles)"
+        ],
+        "summary": "Refuser une demande de déblocage",
+        "description": "Portée : admin — Modification de la configuration. Jeton « admin », rôle opérateur ou administrateur.",
+        "operationId": "delete_api_unblock_requests_id",
+        "x-rempart-scope": "admin",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "3f9c…"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Succès",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    }
+                  }
+                },
+                "example": {
+                  "ok": true
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
       }
     },
     "/api/rpz": {

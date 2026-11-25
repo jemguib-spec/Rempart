@@ -73,6 +73,38 @@ type Encrypted struct {
 	// quand webOnDoH est actif (choisi à chaud, sans redémarrer l'écoute).
 	web      atomic.Pointer[http.Handler]
 	webOnDoH atomic.Bool
+	// page : page de blocage, servie à la place de tout le reste pour un nom
+	// bloqué récemment en mode « page ».
+	page atomic.Pointer[http.Handler]
+}
+
+// SetBlockPageHandler déclare la page de blocage (et de demande de
+// déblocage), servie sur l'écoute DoH pour les noms bloqués.
+func (e *Encrypted) SetBlockPageHandler(h http.Handler) { e.page.Store(&h) }
+
+// root aiguille « / » de l'écoute DoH. Un nom bloqué en mode « page » ne
+// reçoit que la page de blocage, jamais l'interface ; hors des réseaux
+// autorisés, rien (404).
+func (e *Encrypted) root(w http.ResponseWriter, r *http.Request) {
+	if h := e.page.Load(); h != nil && e.srv.BlockedRecently(requestHost(r)) {
+		ap, err := netip.ParseAddrPort(r.RemoteAddr)
+		if err != nil || !e.srv.allowed(ap.Addr()) {
+			http.NotFound(w, r)
+			return
+		}
+		(*h).ServeHTTP(w, r)
+		return
+	}
+	e.webGate(w, r)
+}
+
+// requestHost : nom demandé par le navigateur (en-tête Host, sans port).
+func requestHost(r *http.Request) string {
+	h := r.Host
+	if host, _, err := net.SplitHostPort(h); err == nil {
+		h = host
+	}
+	return strings.TrimSuffix(strings.ToLower(h), ".")
 }
 
 // SetWebHandler déclare l'interface d'administration, à servir aussi sur
@@ -191,7 +223,7 @@ func (e *Encrypted) applyDoH(want bool) error {
 		h := e.srv.DoHHandler(e.dohPath)
 		mux.Handle(e.dohPath, h)
 		mux.Handle(strings.TrimSuffix(e.dohPath, "/")+"/", h) // <chemin>/<jeton d'appareil>
-		mux.HandleFunc("/", e.webGate)
+		mux.HandleFunc("/", e.root)                           // page de blocage, ou interface
 		// Délais de l'interface (sauvegardes longues) : ils couvrent aussi DoH.
 		hs := &http.Server{Handler: mux, TLSConfig: e.tlsConf,
 			ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 3 * time.Minute,

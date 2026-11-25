@@ -488,6 +488,15 @@ Réglages → Blocage → Protections → « Valider DNSSEC sur ce serveur » (a
 
 Métrique : `rempart_dnssec_validations_total{result="secure|insecure|bogus"}`.
 
+## Page de blocage et demandes de déblocage
+
+Réglages → Blocage → « Page d'explication ». Un domaine bloqué reçoit l'adresse de Rempart (à indiquer : celle que les appareils utilisent comme DNS) au lieu de `0.0.0.0`. Le navigateur arrive sur une page qui dit que le site est bloqué et, si vous l'activez, propose de **demander le déblocage** avec un motif facultatif.
+
+- **Aucun port de plus** : la page est servie par l'écoute DoH déjà ouverte (443). Pas de port 80.
+- **Rien d'autre n'est exposé** : seul un nom que Rempart vient de bloquer reçoit la page, et seulement depuis les réseaux autorisés (`dns.allowed_clients`). Sous ce nom, tous les chemins donnent la même page : ni l'interface, ni l'API, ni la règle en cause, ni la version. Aucun script, CSP `default-src 'none'`.
+- **Demandes** : Filtrage → Demandes. Accepter ajoute une exception au groupe de l'appareil ou à Ma liste (audit signé). Seuls les envois de la page elle-même sont acceptés, 5 par appareil et par 10 minutes, 200 en attente au plus. L'appareil est désigné comme dans le journal (pseudonyme du jour par défaut).
+- **Limite** : la page est servie avec le certificat de Rempart, pas celui du site bloqué. Le navigateur affiche d'abord un avertissement ; pour les sites HSTS (Google, Facebook…), il n'autorise pas à continuer. Les applications échouent comme avec l'adresse nulle.
+
 ## Ma liste et suggestions
 
 Filtrage → Ma liste accepte l'import en masse (domaines, hosts, Adblock) et exporte la liste aux formats Adblock, hosts et domaines. Filtrage → Suggestions, une fois activé dans Réglages → Confidentialité, analyse en mémoire les noms résolus, sans rien noter des appareils, et propose de bloquer :

@@ -239,9 +239,35 @@ type Encryption struct {
 	WebOnDoH bool `json:"web_on_doh,omitempty"`
 }
 
+// BlockPage : page affichée par les navigateurs pour un domaine bloqué
+// (mode de blocage « page »). Les noms bloqués reçoivent l'adresse de
+// Rempart ; la page est servie sur l'écoute DoH déjà ouverte. Propre à chaque
+// instance (chacune a son adresse) : n'est pas répliqué.
+type BlockPage struct {
+	IPv4 string `json:"ipv4"`           // adresse de Rempart vue des clients
+	IPv6 string `json:"ipv6,omitempty"` // facultative
+	// Requests : la page propose de demander le déblocage.
+	Requests bool `json:"requests"`
+}
+
+// UnblockRequest : demande de déblocage envoyée depuis la page de blocage.
+// L'appareil est désigné selon Réglages → Confidentialité (pseudonyme du
+// jour par défaut). Propre à chaque instance.
+type UnblockRequest struct {
+	ID        string    `json:"id"`
+	Domain    string    `json:"domain"`
+	Message   string    `json:"message,omitempty"`
+	Client    string    `json:"client"`
+	GroupID   string    `json:"group_id,omitempty"`
+	GroupName string    `json:"group_name,omitempty"`
+	Count     int       `json:"count"` // demandes répétées pour ce nom et ce client
+	Created   time.Time `json:"created"`
+	Updated   time.Time `json:"updated"`
+}
+
 type Settings struct {
 	BlockingEnabled bool   `json:"blocking_enabled"`
-	BlockingMode    string `json:"blocking_mode"` // zero | nxdomain | refused
+	BlockingMode    string `json:"blocking_mode"` // zero | nxdomain | refused | page
 	LogMode         string `json:"log_mode"`      // none | stats | full
 	RetentionDays   int    `json:"retention_days"`
 	ClientIDs       string `json:"client_ids"` // pseudonymize | truncate | clear
@@ -434,6 +460,9 @@ type State struct {
 	// Noms donnés aux appareils de l'inventaire (Appareils → Tous les
 	// appareils). Propres à chaque instance : ils ne sont pas répliqués.
 	DeviceNames []DeviceName `json:"device_names"`
+	// Page de blocage et demandes de déblocage en attente.
+	BlockPage       BlockPage        `json:"block_page"`
+	UnblockRequests []UnblockRequest `json:"unblock_requests"`
 }
 
 // Store is a concurrency-safe, sealed-on-disk State.
@@ -538,6 +567,9 @@ func normalize(st *State) {
 	}
 	if st.DeviceNames == nil {
 		st.DeviceNames = []DeviceName{}
+	}
+	if st.UnblockRequests == nil {
+		st.UnblockRequests = []UnblockRequest{}
 	}
 	if st.Resolvers.Upstreams == nil {
 		st.Resolvers.Upstreams = []string{}

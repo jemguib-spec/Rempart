@@ -863,8 +863,10 @@ views.log = async (main) => {
 
 // ================= Filtrage =================
 views.filters = async (main, tab) => {
-  const sug = await api("/suggestions").catch(() => ({ items: [] }));
-  const t = tabs("filters", [["lists", "Listes de blocage"], ["mine", "Ma liste"], ["rpz", "Flux RPZ"], ["suggestions", `Suggestions${arr(sug.items).length ? " (" + arr(sug.items).length + ")" : ""}`, arr(sug.items).length > 0]], tab);
+  const [sug, reqs] = await Promise.all([api("/suggestions").catch(() => ({ items: [] })), api("/unblock-requests").catch(() => [])]);
+  const nreq = arr(reqs).length;
+  const t = tabs("filters", [["lists", "Listes de blocage"], ["mine", "Ma liste"], ["rpz", "Flux RPZ"], ["suggestions", `Suggestions${arr(sug.items).length ? " (" + arr(sug.items).length + ")" : ""}`, arr(sug.items).length > 0],
+    ["requests", `Demandes${nreq ? " (" + nreq + ")" : ""}`, nreq > 0]], tab);
   main.innerHTML = html`<div class="page">
   ${head("Filtrage", "Un domaine bloqué l'est aussi pour tous ses sous-domaines. Les exceptions l'emportent toujours sur les listes.")}
   <section class="panel">
@@ -990,6 +992,30 @@ filterTabs.suggestions = async (el, sug) => {
   const reload = () => views.filters($("#main"), "suggestions");
   $$("[data-sblock]", el).forEach((b) => (b.onclick = () => act(b, () => api("/rules", { method: "POST", body: { domain: b.dataset.sblock, comment: "suggestion : " + b.dataset.reason, allow: false } }), `${b.dataset.sblock} bloqué`).then(reload)));
   $$("[data-dismiss]", el).forEach((b) => (b.onclick = () => act(b, () => api("/suggestions/dismiss", { method: "POST", body: { domain: b.dataset.dismiss } }), "Suggestion ignorée").then(reload)));
+};
+
+// Demandes de déblocage envoyées depuis la page de blocage (mode « page »).
+filterTabs.requests = async (el) => {
+  const [reqs, bp] = await Promise.all([api("/unblock-requests"), api("/blockpage").catch(() => ({}))]);
+  const items = arr(reqs);
+  el.innerHTML = html`<section class="panel stack">
+    <div class="panel-head"><h2>Demandes de déblocage</h2><p>Envoyées depuis la page affichée pour un site bloqué. Accepter ajoute une exception : au groupe de l'appareil, ou partout (Ma liste).</p></div>
+    ${!bp.active || !bp.requests || !bp.ipv4 ? notice("plain", html`<p>Pour recevoir des demandes, choisissez la réponse « Page d'explication », indiquez l'adresse de Rempart et activez les demandes dans <a href="#/settings/general">Réglages, Blocage</a>.</p>`) : ""}
+    ${items.length ? html`<div class="table-wrap"><table class="cards">
+      <thead><tr><th>Site</th><th>Message</th><th>Appareil</th><th class="num">Fois</th><th>Dernière</th><th></th></tr></thead>
+      <tbody>${items.map((u) => html`<tr>
+        <td class="first domain">${u.domain}</td>
+        <td class="small" data-label="Message">${u.message || html`<span class="muted">—</span>`}</td>
+        <td class="small" data-label="Appareil">${u.client}${u.group_name ? html`<br><span class="tag">${u.group_name}</span>` : ""}</td>
+        <td class="num" data-label="Fois">${n(u.count)}</td>
+        <td class="small" data-label="Dernière">${ago(u.updated)}</td>
+        <td class="act">${u.group_id ? html`<button data-ok="${u.id}" data-scope="group" title="Exception dans le groupe ${u.group_name}">Autoriser pour ${u.group_name}</button> ` : ""}<button data-ok="${u.id}" data-scope="global" title="Exception dans Ma liste">Autoriser partout</button> <button class="link danger" data-no="${u.id}" data-domain="${u.domain}">Refuser</button></td>
+      </tr>`)}</tbody></table></div>
+      <p class="muted small">« Autoriser partout » ajoute l'exception à Ma liste. Pour un appareil d'un groupe qui bloque ce site par une catégorie, un service ou une plage horaire, autorisez-le pour son groupe.</p>` : html`<p class="empty">Aucune demande en attente.</p>`}
+  </section>`;
+  const reload = () => views.filters($("#main"), "requests");
+  $$("[data-ok]", el).forEach((b) => (b.onclick = () => act(b, () => api(`/unblock-requests/${b.dataset.ok}/approve`, { method: "POST", body: { scope: b.dataset.scope } })).then((r) => { if (r) { toast(`${r.domain} autorisé, ${r.where}`); reload(); } })));
+  $$("[data-no]", el).forEach((b) => (b.onclick = () => confirm(`Refuser la demande pour ${b.dataset.domain} ?`) && act(b, () => api("/unblock-requests/" + b.dataset.no, { method: "DELETE" }), "Demande refusée").then(reload)));
 };
 
 // ================= Appareils : groupes, profils, DHCP =================
@@ -3348,7 +3374,8 @@ async function saveSettings(btn, patch) {
 }
 const radioChoice = (name, value, cur, label, help) => html`<label class="choice"><input type="radio" name="${name}" value="${value}" ${checked(cur === value)}><span><b>${label}</b><span class="muted">${help}</span></span></label>`;
 setTabs.general = async (el) => {
-  const s = await api("/settings");
+  const [s, bp] = await Promise.all([api("/settings"), api("/blockpage").catch(() => null)]);
+  const doh = bp?.doh || {};
   el.innerHTML = html`<form id="sf" class="stack">
     <section class="panel stack-s">
       <h2>Blocage</h2>
@@ -3358,8 +3385,20 @@ setTabs.general = async (el) => {
         ${radioChoice("blocking_mode", "zero", s.blocking_mode, "Adresse nulle", "0.0.0.0 et :: — recommandé, les applications échouent immédiatement.")}
         ${radioChoice("blocking_mode", "nxdomain", s.blocking_mode, "Domaine inexistant", "NXDOMAIN : le domaine semble ne pas exister.")}
         ${radioChoice("blocking_mode", "refused", s.blocking_mode, "Refus", "REFUSED : certaines applications réessaient ailleurs.")}
+        ${bp ? radioChoice("blocking_mode", "page", s.blocking_mode, "Page d'explication", "Le site bloqué pointe vers Rempart, qui affiche une page d'explication, avec si vous le souhaitez un formulaire de demande de déblocage.") : ""}
       </div>
     </section>
+    ${bp ? html`<section class="panel stack-s" id="bp">
+      <h2>Page de blocage</h2>
+      <p class="muted small">Servie sur l'écoute DoH déjà ouverte${doh.listen ? html` (<code>${doh.listen}</code>)` : ""}, sans autre port. Elle ne montre que le nom du site bloqué et le formulaire : ni l'interface, ni la règle en cause, ni la version. Seuls les appareils des réseaux autorisés la reçoivent.</p>
+      ${!doh.listen || !doh.running ? notice("bad", html`<p>L'écoute DoH est arrêtée ou absente du fichier de configuration : la page ne peut pas s'afficher. Voir <a href="#/settings/encryption">Réglages, Chiffrement</a>.</p>`) : ""}
+      <div class="fields">
+        <label class="field"><span>Adresse IPv4 de Rempart sur le réseau local</span><input name="bp_ipv4" value="${bp.ipv4 || ""}" placeholder="192.168.1.2" inputmode="decimal" autocomplete="off"><small class="muted">Celle que vos appareils utilisent comme DNS. Vide : réponse « adresse nulle ».</small></label>
+        <label class="field"><span>Adresse IPv6 (facultative)</span><input name="bp_ipv6" value="${bp.ipv6 || ""}" placeholder="fd00::2" autocomplete="off"><small class="muted">Vide : aucune réponse IPv6, le navigateur passe par l'IPv4.</small></label>
+      </div>
+      ${sw("bp_requests", bp.requests, "Proposer de demander le déblocage", "Les demandes arrivent dans Filtrage, Demandes, avec le message éventuel et l'appareil désigné comme dans le journal (Réglages, Confidentialité).")}
+      ${notice("plain", html`<p>Le navigateur ouvre le site en HTTPS avec le certificat de Rempart, qui ne porte pas son nom : il affiche d'abord un avertissement. Pour les sites qui l'interdisent (HSTS : Google, Facebook…), la page ne peut pas s'afficher et l'avertissement reste. Les applications, elles, échouent simplement.</p>`)}
+    </section>` : ""}
     <section class="panel stack-s">
       <h2>Protections</h2>
       ${sw("block_cname_cloaking", s.block_cname_cloaking, "Démasquer les traqueurs cachés derrière un CNAME", "Bloque metrics.site.fr quand il pointe vers un domaine de traçage.")}
@@ -3376,7 +3415,16 @@ setTabs.general = async (el) => {
   $("#sf").onsubmit = (e) => {
     e.preventDefault();
     const f = new FormData(e.target);
-    saveSettings(e.submitter, { blocking_enabled: !!f.get("blocking_enabled"), blocking_mode: f.get("blocking_mode"), block_cname_cloaking: !!f.get("block_cname_cloaking"), rebind_protection: !!f.get("rebind_protection"), dnssec_validation_off: !f.get("dnssec_validation"), block_doh_canary: !!f.get("block_doh_canary"), time_zone: f.get("time_zone").trim() });
+    const btn = e.submitter;
+    const save = () => saveSettings(btn, { blocking_enabled: !!f.get("blocking_enabled"), blocking_mode: f.get("blocking_mode"), block_cname_cloaking: !!f.get("block_cname_cloaking"), rebind_protection: !!f.get("rebind_protection"), dnssec_validation_off: !f.get("dnssec_validation"), block_doh_canary: !!f.get("block_doh_canary"), time_zone: f.get("time_zone").trim() });
+    if (!bp) return save();
+    // Page de blocage d'abord : une adresse refusée n'enregistre rien.
+    act(btn, () => api("/blockpage", { method: "PUT", body: { ipv4: f.get("bp_ipv4").trim(), ipv6: f.get("bp_ipv6").trim(), requests: !!f.get("bp_requests") } })).then((r) => {
+      if (!r) return;
+      save().then(() => {
+        if (f.get("blocking_mode") === "page" && !r.ipv4) toast("Page d'explication : indiquez l'adresse IPv4 de Rempart, sinon les sites bloqués reçoivent l'adresse nulle", true);
+      });
+    });
   };
   $("#flush").onclick = (e) => act(e.currentTarget, () => api("/cache/flush", { method: "POST" }), "Cache vidé");
 };

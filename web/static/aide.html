@@ -282,11 +282,20 @@ powershell -ExecutionPolicy Bypass -File scripts\install.ps1   # Windows</code><
     <div class="table-wrap"><table>
       <thead><tr><th>Réglage</th><th>Valeurs</th><th>Conseil</th></tr></thead>
       <tbody>
-        <tr><td>Réponse aux domaines bloqués</td><td>0.0.0.0 (zero), NXDOMAIN, REFUSED</td><td>0.0.0.0 : les applications abandonnent vite, sans réessayer.</td></tr>
+        <tr><td>Réponse aux domaines bloqués</td><td>0.0.0.0 (zero), NXDOMAIN, REFUSED, page d'explication</td><td>0.0.0.0 : les applications abandonnent vite, sans réessayer. Page d'explication : voir ci-dessous.</td></tr>
         <tr><td>Fuseau horaire</td><td>Nom IANA (Europe/Paris)</td><td>Indispensable aux plages horaires.</td></tr>
         <tr><td>Protections</td><td>CNAME, anti-rebinding, canari DoH, validation DNSSEC</td><td>Laissez-les actives.</td></tr>
       </tbody>
     </table></div>
+    <h3 id="page-blocage">Page de blocage et demandes de déblocage</h3>
+    <p>Avec la réponse « Page d'explication », un site bloqué ouvert dans un navigateur affiche une page qui l'indique, avec, si vous l'activez, un bouton <b>Demander le déblocage</b> et un motif facultatif.</p>
+    <ol class="steps">
+      <li>Réglages → Blocage : choisissez « Page d'explication » et indiquez l'adresse IPv4 de Rempart sur le réseau (celle que vos appareils utilisent comme DNS). L'IPv6 est facultative.</li>
+      <li>Activez « Proposer de demander le déblocage » si vous voulez recevoir des demandes.</li>
+      <li>Les demandes arrivent dans Filtrage → Demandes. « Autoriser pour &lt;groupe&gt; » ajoute l'exception au groupe de l'appareil ; « Autoriser partout » l'ajoute à Ma liste ; « Refuser » supprime la demande.</li>
+    </ol>
+    <p>La page passe par l'écoute DoH déjà ouverte (port 443) : aucun port de plus. Elle n'est servie qu'aux appareils des réseaux autorisés, et seulement sous un nom que Rempart vient de bloquer. Elle ne montre que ce nom et le formulaire : ni l'interface, ni la règle en cause, ni la version.</p>
+    <div class="callout warn"><div><b class="t">Avertissement du navigateur</b>Le navigateur reçoit le certificat de Rempart, qui ne porte pas le nom du site : il affiche d'abord un avertissement de sécurité. Pour les sites qui l'interdisent (HSTS : Google, Facebook, banques…), on ne peut pas passer outre et la page ne s'affiche pas.</div></div>
     <h3 id="confidentialite">Confidentialité</h3>
     <ul>
       <li><b>Mode du journal</b> : aucun, statistiques anonymes, complet chiffré (voir <a href="#journal">Journal</a>).</li>

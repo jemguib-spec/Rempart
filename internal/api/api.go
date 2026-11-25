@@ -95,6 +95,7 @@ type API struct {
 	idp      identityState
 	auditChk auditCheck
 	acme     acmeJob
+	pageRate pageRate // demandes de déblocage par appareil
 }
 
 func (a *API) Handler(ttl time.Duration) http.Handler {
@@ -124,6 +125,11 @@ func (a *API) Handler(ttl time.Duration) http.Handler {
 	auth("admin", "GET /api/querylog/days/{day}", a.queryLogDay)
 	auth("read", "GET /api/settings", a.getSettings)
 	auth("admin", "PUT /api/settings", a.putSettings)
+	auth("read", "GET /api/blockpage", a.getBlockPage)
+	auth("admin", "PUT /api/blockpage", a.putBlockPage)
+	auth("read", "GET /api/unblock-requests", a.listUnblock)
+	auth("admin", "POST /api/unblock-requests/{id}/approve", a.approveUnblock)
+	auth("admin", "DELETE /api/unblock-requests/{id}", a.rejectUnblock)
 	auth("read", "GET /api/encryption", a.getEncryption)
 	auth("admin", "PUT /api/encryption", a.putEncryption)
 	auth("admin", "POST /api/pause", a.pause)
@@ -501,7 +507,7 @@ func (a *API) putSettings(w http.ResponseWriter, r *http.Request, user string) {
 		jsonError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if !slices.Contains([]string{"zero", "nxdomain", "refused"}, in.BlockingMode) ||
+	if !slices.Contains([]string{"zero", "nxdomain", "refused", "page"}, in.BlockingMode) ||
 		!slices.Contains([]string{"none", "stats", "full"}, in.LogMode) ||
 		!slices.Contains([]string{"pseudonymize", "truncate", "clear"}, in.ClientIDs) ||
 		in.RetentionDays < 1 || in.RetentionDays > 3650 {
