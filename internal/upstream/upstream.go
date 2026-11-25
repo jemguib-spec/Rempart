@@ -5,6 +5,7 @@ package upstream
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -15,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -335,9 +337,36 @@ type member struct {
 	queries atomic.Uint64
 	errors  atomic.Uint64
 	totalUs atomic.Uint64
+	// score : temps de réponse lissé en µs (0 : pas encore mesuré), pénalisé
+	// à chaque échec. Sert à choisir les résolveurs mis en course.
+	score atomic.Uint64
 }
 
-// Group races two random upstreams and falls back on the others.
+const (
+	errorPenaltyUs = 500_000 // un échec compte au moins pour 500 ms
+	maxScoreUs     = 10_000_000
+)
+
+func (m *member) observe(d time.Duration, failed bool) {
+	for {
+		old := m.score.Load()
+		var nu uint64
+		switch {
+		case failed:
+			nu = min(max(old*2, errorPenaltyUs), maxScoreUs)
+		case old == 0:
+			nu = uint64(d.Microseconds())
+		default:
+			nu = (old*7 + uint64(d.Microseconds())*3) / 10
+		}
+		if m.score.CompareAndSwap(old, nu) {
+			return
+		}
+	}
+}
+
+// Group races the fastest upstream against one other picked at random (so
+// that a resolver that got faster is noticed) and falls back on the rest.
 type Group struct {
 	members []*member
 }
@@ -362,18 +391,26 @@ type answer struct {
 func (g *Group) call(ctx context.Context, mb *member, q *dns.Msg, out chan<- answer) {
 	start := time.Now()
 	r, err := mb.u.Exchange(ctx, q)
+	elapsed := time.Since(start)
+	if errors.Is(ctx.Err(), context.Canceled) && err != nil {
+		// Course perdue face à un autre résolveur : ni erreur ni mesure.
+		out <- answer{r, mb, err}
+		return
+	}
 	mb.queries.Add(1)
+	failed := err != nil || r == nil || r.Rcode == dns.RcodeServerFailure
 	if err != nil {
 		mb.errors.Add(1)
 	} else {
-		mb.totalUs.Add(uint64(time.Since(start).Microseconds()))
+		mb.totalUs.Add(uint64(elapsed.Microseconds()))
 	}
+	mb.observe(elapsed, failed)
 	out <- answer{r, mb, err}
 }
 
 // Exchange returns the first successful answer and the upstream name.
 func (g *Group) Exchange(ctx context.Context, q *dns.Msg) (*dns.Msg, string, error) {
-	order := rand.Perm(len(g.members))
+	order := g.order()
 	first := order[:min(2, len(order))]
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -401,6 +438,27 @@ func (g *Group) Exchange(ctx context.Context, q *dns.Msg) (*dns.Msg, string, err
 		last = errors.New("SERVFAIL de tous les upstreams")
 	}
 	return nil, "", last
+}
+
+// order : le plus rapide, puis un autre tiré au hasard, puis les autres du
+// plus rapide au plus lent. Un résolveur jamais mesuré passe en tête.
+func (g *Group) order() []int {
+	n := len(g.members)
+	idx := rand.Perm(n)
+	if n <= 1 {
+		return idx
+	}
+	scores := make([]uint64, n)
+	for i, m := range g.members {
+		scores[i] = m.score.Load()
+	}
+	slices.SortStableFunc(idx, func(a, b int) int { return cmp.Compare(scores[a], scores[b]) })
+	if n > 2 {
+		j := 1 + rand.IntN(n-1)
+		idx[1], idx[j] = idx[j], idx[1]
+		slices.SortStableFunc(idx[2:], func(a, b int) int { return cmp.Compare(scores[a], scores[b]) })
+	}
+	return idx
 }
 
 func (g *Group) Stats() []Stat {

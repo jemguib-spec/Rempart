@@ -186,3 +186,60 @@ func TestConcurrent(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// age vieillit une entrée de d.
+func age(c *Cache, k string, d time.Duration) {
+	s := c.shard(k)
+	s.mu.Lock()
+	e := s.m[k]
+	e.stored, e.expires = e.stored.Add(-d), e.expires.Add(-d)
+	s.m[k] = e
+	s.mu.Unlock()
+}
+
+func TestServeStale(t *testing.T) {
+	c := New(1000, 0, time.Hour)
+	k := "k"
+	c.Set(k, answer("a.example.", 60))
+	if _, ok := c.GetStale(k); ok {
+		t.Fatal("réponse fraîche rendue comme expirée")
+	}
+	age(c, k, 2*time.Minute)
+	if _, ok := c.Get(k); ok {
+		t.Fatal("réponse expirée rendue comme fraîche")
+	}
+	m, ok := c.GetStale(k)
+	if !ok || m.Answer[0].Header().Ttl != StaleTTL {
+		t.Fatalf("réponse expirée absente ou mauvais TTL : %v", m)
+	}
+	age(c, k, StaleWindow)
+	if _, ok := c.GetStale(k); ok {
+		t.Fatal("réponse rendue au-delà de la fenêtre")
+	}
+}
+
+func TestClaimPrefetch(t *testing.T) {
+	c := New(1000, 0, time.Hour)
+	k := "k"
+	c.Set(k, answer("a.example.", 100))
+	if c.ClaimPrefetch(k) {
+		t.Fatal("rafraîchissement trop tôt")
+	}
+	age(c, k, 95*time.Second)
+	if !c.ClaimPrefetch(k) {
+		t.Fatal("pas de rafraîchissement en fin de vie")
+	}
+	if c.ClaimPrefetch(k) {
+		t.Fatal("deux rafraîchissements simultanés")
+	}
+	c.Set(k, answer("a.example.", 100))
+	age(c, k, 95*time.Second)
+	if !c.ClaimPrefetch(k) {
+		t.Fatal("Set ne libère pas le rafraîchissement")
+	}
+	c.Set("court", answer("b.example.", 5))
+	age(c, "court", 4*time.Second)
+	if c.ClaimPrefetch("court") {
+		t.Fatal("TTL trop court rafraîchi d'avance")
+	}
+}

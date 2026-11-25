@@ -2,6 +2,16 @@
 
 ## Non publié
 
+### Rapidité et changements de réseau
+
+- **DoT et TCP traitent les requêtes d'une connexion en parallèle** (RFC 7766 §6.2.1.1), jusqu'à 64 par connexion, les réponses partant dans l'ordre où elles sont prêtes. La bibliothèque DNS attendait la réponse d'une requête avant de lire la suivante ; or le DNS privé d'Android envoie tout sur une seule connexion DoT : une requête lente retenait toutes celles du téléphone. Les requêtes signées TSIG et les transferts de zone restent traités une par une. À la fermeture, les réponses en cours partent encore (6 s au plus).
+- **Connexion DoT gardée 2 minutes sans requête** (30 s avant) : moins de poignées de main TLS, coûteuses en 4G.
+- **Rafraîchissement anticipé du cache** : une réponse demandée dans le dernier dixième de sa durée de vie (TTL d'au moins 10 s) est renouvelée en arrière-plan. Les CDN vidéo ont des TTL de 20 à 60 s : le client suivant ne patiente plus.
+- **Réponses expirées (serve-stale, RFC 8767)** : gardées 24 h après expiration, servies avec un TTL de 30 s si les résolveurs en amont échouent ou ne répondent pas en 1,8 s. La résolution continue et met le cache à jour. Une réponse refusée par DNSSEC n'est jamais remplacée par une réponse expirée ; filtrage, CNAME et RPZ sont réappliqués.
+- **Choix des résolveurs en amont selon leur rapidité** : le plus rapide (temps lissé, échecs pénalisés) court contre un autre tiré au hasard, au lieu de deux au hasard. Les secours sont essayés du plus rapide au plus lent.
+- **Les tests de connectivité des systèmes ne sont plus bloqués par les listes** (Android, Xiaomi `connect.rom.miui.com`, Huawei, Apple, Windows, Firefox, GNOME, Ubuntu). Bloqués, ils faisaient juger le Wi-Fi « sans Internet » au passage de la 4G au Wi-Fi, pendant plusieurs minutes. Les plages horaires des groupes s'appliquent toujours.
+- Aide, Dépannage : « Internet coupé quelques minutes en passant de la 4G au Wi-Fi » (nom local du DNS privé, DNS IPv6 annoncé par la box) et « La navigation est lente ».
+
 ### Certificat sans port ouvert
 
 - **Défi ACME dns-01 chez l'hébergeur DNS public**, OVHcloud (Europe, Canada, US) et Cloudflare. Rempart publie le TXT `_acme-challenge` par l'API HTTPS de l'hébergeur et attend que chaque serveur faisant autorité de la zone le serve. Il laisse ensuite l'AC valider, puis retire l'enregistrement, même en cas d'échec. Let's Encrypt fonctionne donc sans aucun port entrant, ni sur la machine ni sur la box : seulement des requêtes sortantes. Nouveau paquet `internal/acmedns`, sans dépendance ajoutée.

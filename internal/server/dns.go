@@ -95,6 +95,7 @@ type Server struct {
 	byProto sync.Map // string → *atomic.Uint64
 
 	nsCache sync.Map // nom → nsEntry (déclencheurs RPZ sur serveurs de noms)
+	pipes   sync.Map // adresses locale|distante → *pipeConn (TCP et DoT)
 
 	settings atomic.Pointer[Settings]
 	policy   atomic.Pointer[policy.Policy]
@@ -217,6 +218,19 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		}
 		s.Authority.Serve(w, req, ip.Unmap(), proto)
 		return
+	}
+	if proto != "udp" && req.IsTsig() == nil {
+		// TCP et DoT : la requête suivante de la connexion est lue sans
+		// attendre celle-ci (voir pipeline.go).
+		if pc := s.pipeFor(w); pc != nil && pc.tryAcquire() {
+			go func() {
+				defer pc.release()
+				if resp := s.Handle(ctx, req, ip.Unmap(), proto); resp != nil {
+					_ = pc.writeMsg(resp)
+				}
+			}()
+			return
+		}
 	}
 	resp := s.Handle(ctx, req, ip.Unmap(), proto)
 	if resp == nil {
@@ -380,6 +394,10 @@ func (s *Server) Handle(ctx context.Context, req *dns.Msg, ip netip.Addr, proto 
 	// Pause et interrupteur généraux suspendent le filtrage de tous ; le
 	// contrôle parental des groupes (plages horaires, SafeSearch) reste actif.
 	blocking := set.BlockingEnabled && start.After(set.PausedUntil)
+	// Les tests de connectivité des systèmes ne sont jamais bloqués par les
+	// listes : bloqués, le téléphone croit le Wi-Fi « sans Internet ».
+	probe := connectivityProbe(q.Name)
+	blocking = blocking && !probe
 	m := s.Blocker.Matcher()
 	var cm *filter.Matcher // catégories du groupe
 	if grp != nil {
@@ -394,7 +412,7 @@ func (s *Server) Handle(ctx context.Context, req *dns.Msg, ip netip.Addr, proto 
 		}
 		if v.Allowed {
 			blocking = false // exception du groupe : ni listes ni CNAME
-		} else if grp.CatsKey != "" {
+		} else if grp.CatsKey != "" && !probe {
 			// Catégories (contrôle parental) : actives même filtrage en pause.
 			if cm = s.Blocker.MatcherFor(grp.CatsKey); cm != nil {
 				if res := cm.Match(q.Name); res.Blocked {
@@ -441,16 +459,42 @@ func (s *Server) Handle(ctx context.Context, req *dns.Msg, ip netip.Addr, proto 
 				}
 			}
 		}
+		if !req.CheckingDisabled && s.Cache.ClaimPrefetch(key) {
+			s.prefetch(key, q, do)
+		}
 		return finish(r, querylog.StatusCached)
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	r, via, vst, why, err := s.resolve(ctx, q, do, req.CheckingDisabled)
-	entry.Upstream = via
+	f, stale := s.fetch(ctx, key, q, do, req.CheckingDisabled)
+	r, vst, why, err := f.r, f.vst, f.why, f.err
+	entry.Upstream = f.via
 	if err != nil {
 		s.Logger.Debug("upstreams en échec", "nom", q.Name, "err", err)
 		return finish(reply(req, dns.RcodeServerFailure), querylog.StatusError)
+	}
+	if stale {
+		// Réponse expirée (RFC 8767) : les contrôles par client sont rejoués
+		// comme pour une réponse en cache ; elle a passé l'anti-rebinding
+		// quand elle a été mise en cache.
+		r.Id = req.Id
+		if blocked, rule, src := s.cnameCheck(m, cm, blocking, set.BlockCNAMECloak, q.Name, r); blocked {
+			entry.Rule, entry.Source = rule, src
+			return finish(s.blocked(req, set.BlockingMode), querylog.StatusBlocked)
+		}
+		if s.RPZ != nil {
+			if hit := s.rpzAfter(ctx, q.Name, r, rpzLimit); hit != nil && hit.Rule.Action != rpz.Passthru {
+				if rr, status := s.applyRPZ(ctx, req, hit, proto, do, &entry); status != "" {
+					if rr == nil {
+						return s.dropped(entry, ip)
+					}
+					return finish(rr, status)
+				}
+			}
+		}
+		entry.Rule = "réponse expirée servie (résolveurs en amont lents ou injoignables)"
+		return finish(r, querylog.StatusCached)
 	}
 	if vst == dnssec.Bogus {
 		s.Logger.Warn("réponse DNSSEC invalide refusée", "nom", q.Name, "type", dns.TypeToString[q.Qtype], "motif", why)
@@ -474,11 +518,9 @@ func (s *Server) Handle(ctx context.Context, req *dns.Msg, ip netip.Addr, proto 
 			}
 		}
 	}
-	if set.RebindProtect && !s.rebindAllowed(q.Name) && !s.forwarded(q.Name) {
-		if bad := privateAnswer(r); bad != "" {
-			entry.Rule, entry.Source = "réponse privée "+bad, "protection anti-rebinding"
-			return finish(s.blocked(req, "nxdomain"), querylog.StatusBlocked)
-		}
+	if bad := s.rebinding(q.Name, r); bad != "" {
+		entry.Rule, entry.Source = "réponse privée "+bad, "protection anti-rebinding"
+		return finish(s.blocked(req, "nxdomain"), querylog.StatusBlocked)
 	}
 	if !req.CheckingDisabled {
 		// Une réponse obtenue avec CD n'est pas validée : elle ne doit pas
@@ -486,6 +528,95 @@ func (s *Server) Handle(ctx context.Context, req *dns.Msg, ip netip.Addr, proto 
 		s.Cache.Set(key, r)
 	}
 	return finish(r, querylog.StatusAllowed)
+}
+
+// rebinding rend l'adresse privée qui fait refuser r (protection
+// anti-rebinding), ou "".
+func (s *Server) rebinding(name string, r *dns.Msg) string {
+	if !s.Settings().RebindProtect || s.rebindAllowed(name) || s.forwarded(name) {
+		return ""
+	}
+	return privateAnswer(r)
+}
+
+// staleAfter : délai au-delà duquel une réponse expirée est servie pendant
+// que la résolution continue (RFC 8767 §5, « client response timer »).
+const staleAfter = 1800 * time.Millisecond
+
+// prefetchSlots borne les rafraîchissements anticipés simultanés.
+var prefetchSlots = make(chan struct{}, 256)
+
+type fetched struct {
+	r   *dns.Msg
+	via string
+	vst dnssec.Status
+	why string
+	err error
+}
+
+func (s *Server) fetchNow(ctx context.Context, q dns.Question, do, cd bool) fetched {
+	r, via, vst, why, err := s.resolve(ctx, q, do, cd)
+	return fetched{r, via, vst, why, err}
+}
+
+// store met en cache une réponse obtenue hors du chemin de la requête
+// (rafraîchissement anticipé, résolution poursuivie après une réponse
+// expirée), avec les mêmes refus que dans Handle.
+func (s *Server) store(key string, q dns.Question, f fetched) {
+	if f.err != nil || f.r == nil || f.vst == dnssec.Bogus || s.rebinding(q.Name, f.r) != "" {
+		return
+	}
+	f.r.Question = []dns.Question{q}
+	s.Cache.Set(key, f.r)
+}
+
+// prefetch rafraîchit en arrière-plan une entrée proche de l'expiration :
+// les CDN (vidéo, Prime, Netflix…) donnent des TTL de 20 à 60 s, et sans
+// cela un client sur quelques-uns attendrait les résolveurs en amont.
+func (s *Server) prefetch(key string, q dns.Question, do bool) {
+	select {
+	case prefetchSlots <- struct{}{}:
+	default:
+		return
+	}
+	go func() {
+		defer func() { <-prefetchSlots }()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		s.store(key, q, s.fetchNow(ctx, q, do, false))
+	}()
+}
+
+// fetch résout q. S'il existe une réponse expirée en cache et que les
+// résolveurs en amont échouent ou tardent plus de staleAfter, elle est
+// rendue (stale) et la résolution se poursuit pour mettre le cache à jour.
+func (s *Server) fetch(ctx context.Context, key string, q dns.Question, do, cd bool) (fetched, bool) {
+	var old *dns.Msg
+	if !cd {
+		old, _ = s.Cache.GetStale(key)
+	}
+	if old == nil {
+		return s.fetchNow(ctx, q, do, cd), false
+	}
+	ch := make(chan fetched, 1)
+	go func() {
+		bctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		f := s.fetchNow(bctx, q, do, cd)
+		s.store(key, q, f)
+		ch <- f
+	}()
+	t := time.NewTimer(staleAfter)
+	defer t.Stop()
+	select {
+	case f := <-ch:
+		if f.err == nil {
+			return f, false
+		}
+	case <-t.C:
+	case <-ctx.Done():
+	}
+	return fetched{r: old, via: "cache (réponse expirée)"}, true
 }
 
 // validating indique si la validation DNSSEC locale s'applique.
@@ -807,7 +938,11 @@ func (s *Server) ListenDNS(addr string) error {
 			return err
 		}
 	}
-	tcp := &dns.Server{Addr: addr, Net: "tcp", Handler: s, MaxTCPQueries: 256,
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	tcp := &dns.Server{Addr: addr, Net: "tcp", Handler: s, MaxTCPQueries: 256, Listener: &pipeListener{Listener: ln, s: s},
 		ReadTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second,
 		IdleTimeout: func() time.Duration { return 10 * time.Second }, TsigProvider: s.tsigProvider(), MsgAcceptFunc: acceptMsg}
 	return s.start(tcp)
@@ -816,9 +951,17 @@ func (s *Server) ListenDNS(addr string) error {
 // ListenDoT starts DNS-over-TLS. Le serveur rendu permet de l'arrêter seul
 // (Stop), quand DoT est désactivé depuis l'interface.
 func (s *Server) ListenDoT(addr string, tlsConf *tls.Config) (*dns.Server, error) {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	// Android garde sa connexion DoT ouverte entre deux salves de requêtes :
+	// une fermeture trop rapide impose une nouvelle poignée de main TLS
+	// (plusieurs allers-retours en 4G) à la requête suivante.
 	srv := &dns.Server{Addr: addr, Net: "tcp-tls", Handler: s, MaxTCPQueries: 1024,
+		Listener:    &pipeListener{Listener: tls.NewListener(ln, tlsConf), s: s},
 		ReadTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second,
-		IdleTimeout: func() time.Duration { return 30 * time.Second }}
+		IdleTimeout: func() time.Duration { return 2 * time.Minute }}
 	srv.TLSConfig = tlsConf
 	srv.TsigProvider, srv.MsgAcceptFunc = s.tsigProvider(), acceptMsg
 	if err := s.start(srv); err != nil {
@@ -863,7 +1006,11 @@ func (s *Server) start(srv *dns.Server) error {
 	errc := make(chan error, 1)
 	srv.NotifyStartedFunc = func() { errc <- nil }
 	go func() {
-		if err := srv.ListenAndServe(); err != nil {
+		serve := srv.ListenAndServe
+		if srv.Listener != nil {
+			serve = srv.ActivateAndServe
+		}
+		if err := serve(); err != nil {
 			select {
 			case errc <- err:
 			default:

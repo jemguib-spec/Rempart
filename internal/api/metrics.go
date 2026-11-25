@@ -71,6 +71,9 @@ func (a *API) metricsHandler(w http.ResponseWriter, r *http.Request, _ string) {
 	m.Gauge("rempart_cache_entries", "Réponses en cache.", float64(entries))
 	m.Counter("rempart_cache_hits_total", "Réponses servies depuis le cache.", float64(hits))
 	m.Counter("rempart_cache_misses_total", "Réponses absentes du cache.", float64(miss))
+	stale, prefetch := a.Cache.StaleStats()
+	m.Counter("rempart_cache_stale_served_total", "Réponses expirées servies faute de réponse à temps des résolveurs en amont (RFC 8767).", float64(stale))
+	m.Counter("rempart_cache_prefetch_total", "Réponses rafraîchies avant leur expiration.", float64(prefetch))
 	if a.Server != nil && a.Server.Validator != nil {
 		vc := &a.Server.Validator.Counts
 		for _, x := range []struct {

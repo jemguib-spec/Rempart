@@ -405,6 +405,22 @@ curl -sS -H @/etc/rempart/api.auth --cacert ac.pem -H 'Content-Type: application
     <p>Après 5 échecs depuis une adresse, la connexion est bloquée pour une durée qui double à chaque nouvel échec. Attendez le délai affiché.</p>
     <h3>Le téléphone refuse DoH ou DoT</h3>
     <p>Le certificat est auto-signé : obtenez-en un par ACME ou votre PKI. Pour Android, le certificat doit couvrir <code>*.dns.example</code>.</p>
+    <h3>Internet coupé quelques minutes en passant de la 4G au Wi-Fi (Android, Xiaomi)</h3>
+    <p>À chaque changement de réseau, Android vérifie deux choses avant d'utiliser le Wi-Fi : que le serveur du « DNS privé » répond, et qu'une adresse de test (<code>generate_204</code>) est joignable. Si l'une échoue, le Wi-Fi est jugé « sans Internet » et Android ne réessaie qu'après plusieurs minutes.</p>
+    <ol class="steps">
+      <li><b>Nom local du DNS privé.</b> Sur le Wi-Fi, <code>&lt;jeton&gt;.dns.example</code> doit donner l'adresse <i>locale</i> de Rempart : ajoutez l'enregistrement <code>* IN A 192.168.x.y</code> dans une zone locale <code>dns.example</code> de Rempart. Sinon le téléphone reçoit l'adresse publique, et beaucoup de box ne savent pas renvoyer vers le réseau local une connexion faite à leur propre adresse publique (« NAT loopback »).</li>
+      <li><b>DNS IPv6 de la box.</b> Beaucoup de box annoncent leur propre serveur DNS en IPv6 : le téléphone l'interroge à la place de Rempart, obtient l'adresse publique et contourne le filtrage. Désactivez cette annonce dans la box, ou faites-lui annoncer l'adresse IPv6 de Rempart.</li>
+      <li><b>Adresses de test.</b> Rempart ne bloque plus par les listes les tests de connectivité des systèmes (<code>connectivitycheck.gstatic.com</code>, <code>connect.rom.miui.com</code> de Xiaomi, <code>captive.apple.com</code>, <code>www.msftconnecttest.com</code>…). Les plages horaires d'un groupe s'appliquent toujours.</li>
+      <li>Journal : filtrez sur le téléphone juste après le passage au Wi-Fi. Un nom refusé, bloqué ou en erreur à ce moment-là est la cause.</li>
+    </ol>
+    <h3>La navigation est lente avec Rempart</h3>
+    <ul>
+      <li>Journal : la colonne de durée (ms) montre si le DNS est en cause. Une réponse en cache prend moins d'une milliseconde ; une résolution en amont, quelques dizaines.</li>
+      <li>Une connexion DoT (DNS privé d'Android) traite ses requêtes en parallèle : une requête lente ne retient plus les autres.</li>
+      <li>Un nom demandé souvent est rafraîchi avant son expiration (les CDN vidéo ont des TTL de 20 à 60 s). Si les résolveurs en amont ne répondent pas en 1,8 s, la dernière réponse connue est servie (RFC 8767), au plus 24 h après son expiration, et le cache est mis à jour dès qu'ils répondent.</li>
+      <li>Rempart met en course le résolveur en amont le plus rapide et un autre tiré au hasard ; un résolveur en échec passe en dernier. Réglages → Résolution DNS montre le temps moyen de chacun : retirez celui qui est nettement plus lent.</li>
+      <li>Une application qui attend un domaine bloqué (mesure d'audience, publicité) peut paraître lente : le journal montre ce qui est bloqué pendant son ouverture ; ajoutez une exception si besoin.</li>
+    </ul>
     <h3>Rempart ne répond plus après un redémarrage</h3>
     <p>En démarrage sous quorum, il attend M dépositaires : <code>podman exec -it rempart rempart unseal</code>. Avec un HSM, vérifiez le PIN (<code>REMPART_PKCS11_PIN_FILE</code>) et la bibliothèque PKCS#11. Les journaux du conteneur (<code>podman logs rempart</code>) donnent la cause.</p>
 
