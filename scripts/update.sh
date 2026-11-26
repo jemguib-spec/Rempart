@@ -43,7 +43,7 @@ main() {
   # Une seule mise à jour à la fois (service et lancement manuel).
   exec 9>"$REPO/.git/rempart-update.lock"
   if command -v flock >/dev/null 2>&1; then
-    flock -w 900 9 || { log "une autre mise à jour est en cours"; exit 1; }
+    flock -w 3600 9 || { log "une autre mise à jour est en cours"; exit 1; }
   fi
 
   # ---- dépôt ----

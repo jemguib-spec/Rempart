@@ -203,12 +203,12 @@ if [ "$QUADLET" = 1 ]; then
   PRE=""; [ "$AUTO_UPDATE" = 1 ] && PRE="$UPDATE_PRE"
   SCRATCH_UNIT=$(mktemp)
   # Avec --auto-update, la mise à jour s'insère dans [Service], et la
-  # construction de l'image dispose de 15 minutes.
+  # construction de l'image dispose d'une heure (un seul cœur ARM : 20 minutes et plus).
   sed "s|^PublishPort=127.0.0.1:8080:8080/tcp|PublishPort=$PUB|" deploy/podman/rempart.container | awk -v pre="$PRE" '
     /^TimeoutStartSec=/ && pre != "" {
       print "# Mise à jour depuis le dépôt avant chaque démarrage (install.sh --auto-update)."
       print pre
-      print "TimeoutStartSec=900"
+      print "TimeoutStartSec=3600"
       next
     }
     { print }' > "$SCRATCH_UNIT"
@@ -258,7 +258,7 @@ WorkingDirectory=$REPO
 $UPDATE_PRE
 ExecStart=$CMD up -d
 ExecStop=$CMD stop
-TimeoutStartSec=900
+TimeoutStartSec=3600
 
 [Install]
 WantedBy=multi-user.target

@@ -102,7 +102,7 @@ Ce qu'il faut savoir :
 
 - Le service suit la branche du clone (`main` par défaut), en avance rapide seulement. Un fichier suivi modifié à la main dans `/opt/rempart` bloque la mise à jour (le journal le dit) : mettez vos réglages dans `.env` ou `docker-compose.override.yml`, ignorés par git.
 - Avec `systemctl restart`, Rempart est arrêté avant la mise à jour. Si `/etc/resolv.conf` de la machine ne pointe que vers Rempart lui-même, `github.com` ne se résout plus à ce moment : la mise à jour est sautée et la version en place redémarre. Ajoutez un second serveur DNS (celui de la box) dans `/etc/resolv.conf`, ou utilisez `update.sh --restart`, qui récupère le dépôt pendant que Rempart tourne encore.
-- Quand le code a changé, la construction prend quelques minutes (plus sur un Raspberry Pi) ; le service attend jusqu'à 15 minutes. Elle n'a pas besoin du réseau : dépendances Go dans `vendor/`, images de base en cache depuis la première installation.
+- Quand le code a changé, la construction prend quelques minutes, et 20 minutes ou plus sur une petite machine ARM à un cœur ; le service attend jusqu'à une heure, DNS coupé pendant ce temps. Sur une telle machine, préférez `update.sh --restart`. Il faut aussi 2 Go de mémoire au moins pour compiler : sous 2 Go de RAM, ajoutez du swap (4 Go suffisent). Elle n'a pas besoin du réseau : dépendances Go dans `vendor/`, images de base en cache depuis la première installation.
 - Si la récupération ou la construction échoue, Rempart démarre quand même avec l'image précédente. Les secrets et les données ne sont jamais touchés par la mise à jour.
 - Le service exécute le code du dépôt avec les droits root : ne pointez le clone que vers un dépôt dont vous contrôlez les commits.
 
