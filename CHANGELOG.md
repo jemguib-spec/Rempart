@@ -2,6 +2,12 @@
 
 ## Non publié
 
+### Installation en service
+
+- **`install.sh --auto-update`** : le service systemd `rempart` se met à jour depuis le dépôt à chaque démarrage. Avant de lancer le conteneur, il exécute `scripts/update.sh` : récupération des commits (avance rapide seulement, 90 s au plus), puis reconstruction de l'image si elle ne correspond plus au commit (label `org.opencontainers.image.revision`). En cas d'échec, la version en place démarre. Avec Podman, la mise à jour s'insère dans l'unité Quadlet ; avec compose (Docker sur Debian 12), l'installeur crée `/etc/systemd/system/rempart.service`. Choix gardé dans `.env`, retiré par `--no-auto-update`.
+- **`scripts/update.sh --restart`** : construit la nouvelle image pendant que l'ancienne version tourne, puis redémarre le service. Le DNS n'est coupé que le temps du redémarrage.
+- INSTALL.md : installation pas à pas sur Debian 12 (Docker) et Debian 13 (Podman, Quadlet).
+
 ### Rapidité et changements de réseau
 
 - **DoT et TCP traitent les requêtes d'une connexion en parallèle** (RFC 7766 §6.2.1.1), jusqu'à 64 par connexion, les réponses partant dans l'ordre où elles sont prêtes. La bibliothèque DNS attendait la réponse d'une requête avant de lire la suivante ; or le DNS privé d'Android envoie tout sur une seule connexion DoT : une requête lente retenait toutes celles du téléphone. Les requêtes signées TSIG et les transferts de zone restent traités une par une. À la fermeture, les réponses en cours partent encore (6 s au plus).

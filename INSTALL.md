@@ -63,6 +63,47 @@ Ouvrez ensuite `https://localhost:8080` et connectez-vous en `admin`. Le navigat
 
 Dernière étape : pointez le DNS de votre box, ou de vos postes, vers l'adresse IP de la machine.
 
+### Debian : service systemd mis à jour à chaque redémarrage
+
+Sur un serveur Debian, le plus simple est de cloner le dépôt dans `/opt/rempart` et de laisser l'installeur créer le service. Avec `--auto-update`, chaque `systemctl restart rempart` (et chaque démarrage de la machine) récupère les nouveaux commits du dépôt, reconstruit l'image si le code a changé, puis relance Rempart.
+
+**Debian 13 (trixie) ou plus récent, Podman** (Quadlet exige Podman 4.4 ou plus) :
+
+```bash
+sudo apt update
+sudo apt install -y git podman
+sudo git clone https://github.com/jemguib-spec/Rempart.git /opt/rempart
+cd /opt/rempart
+sudo ./scripts/install.sh --quadlet --auto-update
+```
+
+**Debian 12 (bookworm), Docker** : son Podman (4.3) est trop ancien pour Quadlet. Installez Docker Engine et le greffon compose depuis le dépôt de Docker ([docs.docker.com/engine/install/debian](https://docs.docker.com/engine/install/debian/)), puis :
+
+```bash
+sudo apt install -y git
+sudo git clone https://github.com/jemguib-spec/Rempart.git /opt/rempart
+cd /opt/rempart
+sudo ./scripts/install.sh --engine docker --auto-update
+```
+
+Avec Docker, l'installeur écrit `/etc/systemd/system/rempart.service` autour de `docker compose` ; avec Podman, il installe l'unité Quadlet `/etc/containers/systemd/rempart.container`. Dans les deux cas, le service s'appelle `rempart` :
+
+| Commande | Effet |
+|---|---|
+| `sudo systemctl restart rempart` | `git pull` (avance rapide), reconstruction de l'image si le commit a changé, redémarrage |
+| `sudo /opt/rempart/scripts/update.sh --restart` | même chose, mais l'image est construite **avant** l'arrêt : le DNS n'est coupé que le temps du redémarrage |
+| `systemctl status rempart` | état du service |
+| `journalctl -u rempart -f` | journal, mise à jour comprise (lignes `rempart-update :`) |
+| `sudo ./scripts/install.sh --no-auto-update` | retire la mise à jour au démarrage |
+
+Ce qu'il faut savoir :
+
+- Le service suit la branche du clone (`main` par défaut), en avance rapide seulement. Un fichier suivi modifié à la main dans `/opt/rempart` bloque la mise à jour (le journal le dit) : mettez vos réglages dans `.env` ou `docker-compose.override.yml`, ignorés par git.
+- Avec `systemctl restart`, Rempart est arrêté avant la mise à jour. Si `/etc/resolv.conf` de la machine ne pointe que vers Rempart lui-même, `github.com` ne se résout plus à ce moment : la mise à jour est sautée et la version en place redémarre. Ajoutez un second serveur DNS (celui de la box) dans `/etc/resolv.conf`, ou utilisez `update.sh --restart`, qui récupère le dépôt pendant que Rempart tourne encore.
+- Quand le code a changé, la construction prend quelques minutes (plus sur un Raspberry Pi) ; le service attend jusqu'à 15 minutes. Elle n'a pas besoin du réseau : dépendances Go dans `vendor/`, images de base en cache depuis la première installation.
+- Si la récupération ou la construction échoue, Rempart démarre quand même avec l'image précédente. Les secrets et les données ne sont jamais touchés par la mise à jour.
+- Le service exécute le code du dépôt avec les droits root : ne pointez le clone que vers un dépôt dont vous contrôlez les commits.
+
 ### Options
 
 | Linux / macOS | Windows | Effet |
@@ -75,8 +116,10 @@ Dernière étape : pointez le DNS de votre box, ou de vos postes, vers l'adresse
 | `--web-port N` | `-WebPort N` | port de l'interface sur la machine (8080 par défaut, 8443 par exemple) |
 | `--web-lan` | `-WebLan` | interface ouverte sur le réseau local (par défaut : la machine seulement) |
 | `--web-local` | `-WebLocal` | revenir à une interface accessible depuis la machine seulement |
+| `--auto-update` | — | Linux et systemd : le service `rempart` se met à jour depuis le dépôt à chaque (re)démarrage (voir « Debian » plus haut) ; avec compose, crée `/etc/systemd/system/rempart.service` (sudo) |
+| `--no-auto-update` | — | retire cette mise à jour automatique |
 
-Les choix `--web-*` sont gardés dans `.env` (sans secret) et repris aux relances. Pour l'interface sur le port 443 à côté de DoH, sans port à taper : Réglages → Chiffrement → « Interface aussi sur le port DoH », réservé au réseau local.
+Les choix `--web-*` et `--auto-update` sont gardés dans `.env` (sans secret) et repris aux relances. Pour l'interface sur le port 443 à côté de DoH, sans port à taper : Réglages → Chiffrement → « Interface aussi sur le port DoH », réservé au réseau local.
 
 ## 3. Où sont les secrets
 
@@ -98,6 +141,8 @@ git pull
 ```
 
 L'image est reconstruite et le conteneur recréé. Les secrets et les données sont gardés, rien n'est redemandé.
+
+Installé avec `--auto-update`, il suffit de `sudo systemctl restart rempart`, ou de `sudo scripts/update.sh --restart` pour construire l'image avant d'arrêter l'ancienne version.
 
 La nouvelle image est construite pendant que l'ancienne version tourne encore : c'est important quand Rempart est le DNS de la machine elle-même, car sans lui Docker ne peut plus télécharger les images de base. Si une étape échoue après l'arrêt de l'ancienne version, l'installeur la relance.
 
@@ -127,6 +172,7 @@ docker run --rm --network none -v rempart-secrets:/run/secrets -v rempart_rempar
 | « Ports déjà utilisés » | voir la section 1 ; libérez le port, puis relancez |
 | « ne répond pas » au début | Docker Desktop arrêté, ou `podman machine start` à faire |
 | « Podman sans root ne peut pas ouvrir les ports » | `sudo sysctl -w net.ipv4.ip_unprivileged_port_start=53`, à rendre permanent dans `/etc/sysctl.d/` |
+| `systemctl restart rempart` ne met pas à jour | `journalctl -u rempart` : « dépôt injoignable » (la machine n'a que Rempart comme DNS : second serveur dans `/etc/resolv.conf`, ou `scripts/update.sh --restart`) ; « avance rapide impossible » (fichier modifié dans le clone : `git status`) |
 | « n'a pas créé son état en 2 minutes » | `docker logs rempart` (ou `podman logs rempart`) donne la cause ; le mot de passe initial reste dans le volume, relancez l'installeur une fois corrigé |
 | Rempart ne répond plus après un redémarrage | en démarrage sous quorum, il attend les dépositaires : `podman exec -it rempart rempart unseal` |
 | Phrase du keystore perdue | sans elle ni quorum de secours, le keystore et les données chiffrées sont irrécupérables : c'est voulu |

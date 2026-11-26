@@ -16,7 +16,9 @@ Usage : scripts/install.sh [options]
   --web-port N            port de l'interface sur la machine (défaut 8080 ; 8443 par exemple)
   --web-lan               interface ouverte sur le réseau local (défaut : cette machine seulement)
   --web-local             revenir à une interface accessible depuis cette machine seulement
-Les choix --web-* sont gardés dans .env (sans secret) pour les relances suivantes.
+  --auto-update           service systemd qui se met à jour depuis le dépôt (git pull + image) à chaque démarrage
+  --no-auto-update        retirer cette mise à jour automatique
+Les choix --web-* et --auto-update sont gardés dans .env (sans secret) pour les relances suivantes.
 Pour l'interface sur le port 443, à côté de DoH : Réglages → Chiffrement, une fois Rempart installé.
 Relancer le script est sans risque : les secrets déjà présents sont gardés, l'image est reconstruite.
 EOF
@@ -24,10 +26,11 @@ EOF
 
 ENGINE=""; SOFTHSM=0; QUADLET=0; HSMPIN=0; BUILD=1
 # Interface : choix précédents (.env), sinon locale sur 8080.
-WEB_PORT=8080; WEB_BIND=127.0.0.1
+WEB_PORT=8080; WEB_BIND=127.0.0.1; AUTO_UPDATE=0
 if [ -f .env ]; then
   v=$(sed -n 's/^REMPART_WEB_PORT=//p' .env); [ -n "$v" ] && WEB_PORT=$v
   v=$(sed -n 's/^REMPART_WEB_BIND=//p' .env); [ -n "$v" ] && WEB_BIND=$v
+  v=$(sed -n 's/^REMPART_AUTO_UPDATE=//p' .env); [ -n "$v" ] && AUTO_UPDATE=$v
 fi
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -39,6 +42,8 @@ while [ $# -gt 0 ]; do
     --web-port) WEB_PORT="${2:-}"; shift 2 ;;
     --web-lan) WEB_BIND=0.0.0.0; shift ;;
     --web-local) WEB_BIND=127.0.0.1; shift ;;
+    --auto-update) AUTO_UPDATE=1; shift ;;
+    --no-auto-update) AUTO_UPDATE=0; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "option inconnue : $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -69,6 +74,14 @@ command -v "$ENGINE" >/dev/null 2>&1 || die "$ENGINE introuvable"
 [ "$QUADLET" = 1 ] && [ "$ENGINE" != podman ] && die "--quadlet suppose Podman (--engine podman)"
 [ "$QUADLET" = 1 ] && [ "$(uname -s)" != Linux ] && die "--quadlet suppose Linux et systemd"
 [ "$QUADLET" = 1 ] && [ "$SOFTHSM" = 1 ] && die "--quadlet et --softhsm ne se combinent pas : la démonstration SoftHSM passe par compose"
+REPO=$(pwd)
+if [ "$AUTO_UPDATE" = 1 ]; then
+  { [ "$(uname -s)" = Linux ] && command -v systemctl >/dev/null 2>&1; } || die "--auto-update suppose Linux et systemd"
+  [ "$QUADLET" = 1 ] || [ "$(id -u)" = 0 ] || die "--auto-update avec compose installe un service systemd : lancez le script avec sudo"
+  case "$REPO" in *[!A-Za-z0-9/._-]*) die "--auto-update : le chemin du dépôt ($REPO) ne doit contenir ni espace ni caractère spécial (clonez dans /opt/rempart)" ;; esac
+  git -c safe.directory="$REPO" rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1 \
+    || die "--auto-update : ce dossier doit être un clone git dont la branche suit le dépôt distant (git clone …)"
+fi
 
 if [ "$SOFTHSM" = 1 ]; then
   FILE=docker-compose.hsm.yml; PROJECT=rempart-hsm; IMAGE=rempart:softhsm; TARGET=softhsm
@@ -95,7 +108,13 @@ fi
 # base échoue. Un échec de construction laisse l'ancienne version tourner.
 if [ "$BUILD" = 1 ]; then
   say "Construction de l'image $IMAGE"
-  "$ENGINE" build --target "$TARGET" -t "$IMAGE" .
+  # Image marquée du commit : scripts/update.sh ne la reconstruit que si le dépôt a avancé.
+  REV=$(git -c safe.directory="$REPO" rev-parse HEAD 2>/dev/null || true)
+  if [ -n "$REV" ]; then
+    "$ENGINE" build --target "$TARGET" --label "org.opencontainers.image.revision=$REV" -t "$IMAGE" .
+  else
+    "$ENGINE" build --target "$TARGET" -t "$IMAGE" .
+  fi
 else
   "$ENGINE" image inspect "$IMAGE" >/dev/null 2>&1 || die "image $IMAGE absente (--no-build)"
 fi
@@ -164,23 +183,76 @@ setup -it "$IMAGE" setup-secrets -data /var/lib/rempart $SETUP
 
 # ---- démarrage ----
 say "Démarrage"
+# Choix de l'interface et de la mise à jour, repris aux relances (lus aussi par compose).
+printf '# .env - choix de scripts/install.sh (--web-port, --web-lan, --auto-update) ; aucun secret.\nREMPART_WEB_BIND=%s\nREMPART_WEB_PORT=%s\nREMPART_AUTO_UPDATE=%s\n' "$WEB_BIND" "$WEB_PORT" "$AUTO_UPDATE" > .env
+# Mise à jour au démarrage : le service lance scripts/update.sh avant de
+# démarrer le conteneur ; le « - » fait démarrer la version en place si elle échoue.
+UPDATE_PRE="ExecStartPre=-$REPO/scripts/update.sh --engine $ENGINE --target $TARGET --image $IMAGE"
+UNIT=/etc/systemd/system/rempart.service
 if [ "$QUADLET" = 1 ]; then
   if [ "$(id -u)" = 0 ]; then UNITDIR=/etc/containers/systemd; SC="systemctl"
   else UNITDIR="$HOME/.config/containers/systemd"; SC="systemctl --user"; fi
   mkdir -p "$UNITDIR"
   if [ "$WEB_BIND" = 0.0.0.0 ]; then PUB="$WEB_PORT:8080/tcp"; else PUB="$WEB_BIND:$WEB_PORT:8080/tcp"; fi
-  sed "s|^PublishPort=127.0.0.1:8080:8080/tcp|PublishPort=$PUB|" deploy/podman/rempart.container > "$UNITDIR/rempart.container"
+  PRE=""; [ "$AUTO_UPDATE" = 1 ] && PRE="$UPDATE_PRE"
+  # Avec --auto-update, la mise à jour s'insère dans [Service], et la
+  # construction de l'image dispose de 15 minutes.
+  sed "s|^PublishPort=127.0.0.1:8080:8080/tcp|PublishPort=$PUB|" deploy/podman/rempart.container | awk -v pre="$PRE" '
+    /^TimeoutStartSec=/ && pre != "" {
+      print "# Mise à jour depuis le dépôt avant chaque démarrage (install.sh --auto-update)."
+      print pre
+      print "TimeoutStartSec=900"
+      next
+    }
+    { print }' > "$UNITDIR/rempart.container"
   $SC daemon-reload
   $SC restart rempart
 else
-  # Interface : adresse et port choisis, lus par compose dans .env.
-  printf '# .env - interface de Rempart (scripts/install.sh --web-port, --web-lan) ; aucun secret.\nREMPART_WEB_BIND=%s\nREMPART_WEB_PORT=%s\n' "$WEB_BIND" "$WEB_PORT" > .env
   # Réglages propres à la machine (adresse d'écoute de l'interface…) : fichier
   # local non versionné, chargé après le fichier du dépôt.
   OVERRIDE=""; [ "$SOFTHSM" = 0 ] && [ -f docker-compose.override.yml ] && OVERRIDE="-f docker-compose.override.yml"
-  # Compose recrée le conteneur arrêté plus haut avec la nouvelle image.
-  # shellcheck disable=SC2086
-  $COMPOSE -f "$FILE" $OVERRIDE up -d
+  if [ "$AUTO_UPDATE" = 1 ]; then
+    # Service systemd autour de compose : « systemctl restart rempart » met à
+    # jour le dépôt et l'image, puis recrée le conteneur.
+    # shellcheck disable=SC2086
+    set -- $COMPOSE; CBIN=$(command -v "$1"); shift
+    CMD="$CBIN${*:+ $*} -f $FILE${OVERRIDE:+ $OVERRIDE}"
+    DEP=""; [ "$ENGINE" = docker ] && DEP="Requires=docker.service
+After=docker.service"
+    cat > "$UNIT" <<UNITEOF
+# rempart.service - créé par scripts/install.sh --auto-update ; retiré par --no-auto-update.
+[Unit]
+Description=Rempart DNS (compose, mis à jour depuis le dépôt à chaque démarrage)
+Wants=network-online.target
+After=network-online.target
+$DEP
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=$REPO
+$UPDATE_PRE
+ExecStart=$CMD up -d
+ExecStop=$CMD stop
+TimeoutStartSec=900
+
+[Install]
+WantedBy=multi-user.target
+UNITEOF
+    systemctl daemon-reload
+    systemctl enable rempart >/dev/null 2>&1
+    systemctl restart rempart
+  else
+    if [ -f "$UNIT" ] && grep -q 'install.sh --auto-update' "$UNIT"; then
+      [ "$(id -u)" = 0 ] || die "--no-auto-update : lancez le script avec sudo pour retirer $UNIT"
+      systemctl disable --now rempart >/dev/null 2>&1 || true
+      rm -f "$UNIT"; systemctl daemon-reload
+      echo "Service rempart.service retiré : plus de mise à jour au démarrage."
+    fi
+    # Compose recrée le conteneur arrêté plus haut avec la nouvelle image.
+    # shellcheck disable=SC2086
+    $COMPOSE -f "$FILE" $OVERRIDE up -d
+  fi
 fi
 STARTED=1
 
@@ -218,3 +290,11 @@ Interface : $WEB_URL  (utilisateur admin)
 Certificat auto-signé tant que vous n'en obtenez pas un (Sécurité → Certificat).
 Journaux : $ENGINE logs $CONTAINER
 EOF
+if [ "$AUTO_UPDATE" = 1 ]; then
+  if [ "$QUADLET" = 1 ] && [ "$(id -u)" != 0 ]; then S="systemctl --user"; J="journalctl --user"; else S="systemctl"; J="journalctl"; fi
+  cat <<EOF
+Mise à jour : « $S restart rempart » récupère le dépôt, reconstruit l'image si besoin, puis redémarre.
+  Pour construire pendant que l'ancienne version tourne encore : $REPO/scripts/update.sh --restart
+  Suivi : $J -u rempart
+EOF
+fi
