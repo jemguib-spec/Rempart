@@ -7,7 +7,7 @@ Guide pas à pas. Le [README](README.md) décrit toutes les fonctions ; cette pa
 | Système | Moteur de conteneurs | Outil compose |
 |---|---|---|
 | Windows 10/11 | Docker Desktop, ou Podman Desktop (machine Podman démarrée) | `docker compose` (inclus), ou `podman compose` avec `podman-compose` ou `docker-compose` |
-| Linux | Docker Engine ou Podman 4.4+ | `docker compose`, `podman-compose` ; ou rien avec `--quadlet` (Podman + systemd) |
+| Linux | Docker Engine ou Podman 4.3+ | `docker compose`, `podman-compose` ; ou rien avec `--quadlet` (Podman + systemd) |
 | macOS | Docker Desktop ou Podman | idem |
 
 Il faut aussi `git`, et environ 1 Go d'espace disque pour construire l'image. La construction télécharge les images de base `golang:1.24-bookworm` et `distroless/cc-debian12`. Les dépendances Go sont incluses dans `vendor/` : rien d'autre n'est téléchargé.
@@ -67,7 +67,7 @@ Dernière étape : pointez le DNS de votre box, ou de vos postes, vers l'adresse
 
 Sur un serveur Debian, le plus simple est de cloner le dépôt dans `/opt/rempart` et de laisser l'installeur créer le service. Avec `--auto-update`, chaque `systemctl restart rempart` (et chaque démarrage de la machine) récupère les nouveaux commits du dépôt, reconstruit l'image si le code a changé, puis relance Rempart.
 
-**Debian 13 (trixie) ou plus récent, Podman** (Quadlet exige Podman 4.4 ou plus) :
+**Podman, Debian 12 (bookworm) ou 13 (trixie)** :
 
 ```bash
 sudo apt update
@@ -77,7 +77,9 @@ cd /opt/rempart
 sudo ./scripts/install.sh --quadlet --auto-update
 ```
 
-**Debian 12 (bookworm), Docker** : son Podman (4.3) est trop ancien pour Quadlet. Installez Docker Engine et le greffon compose depuis le dépôt de Docker ([docs.docker.com/engine/install/debian](https://docs.docker.com/engine/install/debian/)), puis :
+Avec Podman 4.4 ou plus (Debian 13), l'installeur pose l'unité Quadlet `/etc/containers/systemd/rempart.container`. Le Podman de Debian 12 (4.3) n'a pas Quadlet : la même unité est traduite en service classique `/etc/systemd/system/rempart.service` (`podman run`, mêmes ports, volumes et durcissement). Après une montée en Debian 13, relancez l'installeur : il remplace le service classique par l'unité Quadlet.
+
+**Docker** : installez Docker Engine et le greffon compose depuis le dépôt de Docker ([docs.docker.com/engine/install/debian](https://docs.docker.com/engine/install/debian/)), puis :
 
 ```bash
 sudo apt install -y git
@@ -86,7 +88,7 @@ cd /opt/rempart
 sudo ./scripts/install.sh --engine docker --auto-update
 ```
 
-Avec Docker, l'installeur écrit `/etc/systemd/system/rempart.service` autour de `docker compose` ; avec Podman, il installe l'unité Quadlet `/etc/containers/systemd/rempart.container`. Dans les deux cas, le service s'appelle `rempart` :
+Avec Docker, l'installeur écrit `/etc/systemd/system/rempart.service` autour de `docker compose`. Dans tous les cas, le service s'appelle `rempart` :
 
 | Commande | Effet |
 |---|---|
@@ -109,7 +111,7 @@ Ce qu'il faut savoir :
 | Linux / macOS | Windows | Effet |
 |---|---|---|
 | `--engine docker\|podman` | `-Engine docker\|podman` | impose le moteur |
-| `--quadlet` | — | Podman sous Linux : installe `deploy/podman/rempart.container` (systemd) au lieu de compose |
+| `--quadlet` | — | Podman sous Linux : service systemd depuis `deploy/podman/rempart.container` au lieu de compose (unité Quadlet, ou service classique avec Podman < 4.4) |
 | `--softhsm` | `-SoftHSM` | démonstration du mode HSM avec SoftHSM2 (PIN générés dans le volume `rempart-hsm-secrets`) |
 | `--hsm-pin` | `-HsmPin` | ajoute au volume le PIN d'un HSM réel, avant le passage au HSM depuis l'interface |
 | `--no-build` | `-NoBuild` | utilise une image déjà présente (`podman load`, registre interne) |

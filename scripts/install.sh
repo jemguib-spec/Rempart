@@ -10,7 +10,8 @@ usage() {
 Usage : scripts/install.sh [options]
   --engine docker|podman  moteur de conteneurs (défaut : podman s'il est installé, sinon docker)
   --softhsm               démonstration du mode HSM avec SoftHSM2 (docker-compose.hsm.yml)
-  --quadlet               Podman sous Linux : unité systemd (deploy/podman/rempart.container) au lieu de compose
+  --quadlet               Podman sous Linux : service systemd (deploy/podman/rempart.container) au lieu de compose ;
+                          avec Podman < 4.4 (Debian 12), unité classique équivalente, sans Quadlet
   --hsm-pin               ajouter au volume de secrets le PIN d'un HSM réel (passage au HSM depuis l'interface)
   --no-build              utiliser l'image déjà présente (chargée par « load » ou tirée d'un registre interne)
   --web-port N            port de l'interface sur la machine (défaut 8080 ; 8443 par exemple)
@@ -60,7 +61,7 @@ case " 53 853 443 80 " in *" $WEB_PORT "*) die "--web-port $WEB_PORT : déjà ut
 
 # ---- moteur ----
 if [ -z "$ENGINE" ] && [ "$QUADLET" = 1 ]; then
-  command -v podman >/dev/null 2>&1 || die "--quadlet suppose Podman, qui n'est pas installé (apt install podman ; Quadlet exige Podman 4.4 ou plus, Debian 13 ou plus récent)"
+  command -v podman >/dev/null 2>&1 || die "--quadlet suppose Podman, qui n'est pas installé (apt install podman)"
   ENGINE=podman
 fi
 if [ -z "$ENGINE" ]; then
@@ -190,11 +191,17 @@ printf '# .env - choix de scripts/install.sh (--web-port, --web-lan, --auto-upda
 UPDATE_PRE="ExecStartPre=-$REPO/scripts/update.sh --engine $ENGINE --target $TARGET --image $IMAGE"
 UNIT=/etc/systemd/system/rempart.service
 if [ "$QUADLET" = 1 ]; then
-  if [ "$(id -u)" = 0 ]; then UNITDIR=/etc/containers/systemd; SC="systemctl"
-  else UNITDIR="$HOME/.config/containers/systemd"; SC="systemctl --user"; fi
-  mkdir -p "$UNITDIR"
+  if [ "$(id -u)" = 0 ]; then UNITDIR=/etc/containers/systemd; SVCDIR=/etc/systemd/system; SC="systemctl"
+  else UNITDIR="$HOME/.config/containers/systemd"; SVCDIR="$HOME/.config/systemd/user"; SC="systemctl --user"; fi
+  # Quadlet est arrivé avec Podman 4.4 ; avant (Debian 12 : 4.3), la même
+  # unité est traduite en service classique « podman run ».
+  PV=$(podman version --format '{{.Client.Version}}' 2>/dev/null || echo 0.0)
+  PMAJ=${PV%%.*}; PMIN=${PV#*.}; PMIN=${PMIN%%.*}
+  case "$PMAJ$PMIN" in *[!0-9]*|'') PMAJ=0; PMIN=0 ;; esac
+  if [ "$PMAJ" -gt 4 ] || { [ "$PMAJ" = 4 ] && [ "$PMIN" -ge 4 ]; }; then HAVE_QUADLET=1; else HAVE_QUADLET=0; fi
   if [ "$WEB_BIND" = 0.0.0.0 ]; then PUB="$WEB_PORT:8080/tcp"; else PUB="$WEB_BIND:$WEB_PORT:8080/tcp"; fi
   PRE=""; [ "$AUTO_UPDATE" = 1 ] && PRE="$UPDATE_PRE"
+  SCRATCH_UNIT=$(mktemp)
   # Avec --auto-update, la mise à jour s'insère dans [Service], et la
   # construction de l'image dispose de 15 minutes.
   sed "s|^PublishPort=127.0.0.1:8080:8080/tcp|PublishPort=$PUB|" deploy/podman/rempart.container | awk -v pre="$PRE" '
@@ -204,8 +211,25 @@ if [ "$QUADLET" = 1 ]; then
       print "TimeoutStartSec=900"
       next
     }
-    { print }' > "$UNITDIR/rempart.container"
-  $SC daemon-reload
+    { print }' > "$SCRATCH_UNIT"
+  if [ "$HAVE_QUADLET" = 1 ]; then
+    # Une unité classique laissée par Podman 4.3 masquerait celle de Quadlet.
+    if [ -f "$SVCDIR/rempart.service" ] && grep -q 'généré par scripts/install.sh --quadlet' "$SVCDIR/rempart.service"; then
+      $SC disable rempart >/dev/null 2>&1 || true; rm -f "$SVCDIR/rempart.service"
+    fi
+    mkdir -p "$UNITDIR"
+    mv "$SCRATCH_UNIT" "$UNITDIR/rempart.container"
+    $SC daemon-reload
+  else
+    say "Podman $PV sans Quadlet : service systemd classique ($SVCDIR/rempart.service)"
+    mkdir -p "$SVCDIR"
+    awk -v podman="$(command -v podman)" -f deploy/podman/container-to-service.awk < "$SCRATCH_UNIT" > "$SVCDIR/rempart.service.new" \
+      || { rm -f "$SCRATCH_UNIT" "$SVCDIR/rempart.service.new"; die "traduction de deploy/podman/rempart.container impossible"; }
+    rm -f "$SCRATCH_UNIT"
+    mv "$SVCDIR/rempart.service.new" "$SVCDIR/rempart.service"
+    $SC daemon-reload
+    $SC enable rempart >/dev/null 2>&1
+  fi
   $SC restart rempart
 else
   # Réglages propres à la machine (adresse d'écoute de l'interface…) : fichier

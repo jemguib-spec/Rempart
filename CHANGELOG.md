@@ -6,7 +6,8 @@
 
 - **`install.sh --auto-update`** : le service systemd `rempart` se met à jour depuis le dépôt à chaque démarrage. Avant de lancer le conteneur, il exécute `scripts/update.sh` : récupération des commits (avance rapide seulement, 90 s au plus), puis reconstruction de l'image si elle ne correspond plus au commit (label `org.opencontainers.image.revision`). En cas d'échec, la version en place démarre. Avec Podman, la mise à jour s'insère dans l'unité Quadlet ; avec compose (Docker sur Debian 12), l'installeur crée `/etc/systemd/system/rempart.service`. Choix gardé dans `.env`, retiré par `--no-auto-update`.
 - **`scripts/update.sh --restart`** : construit la nouvelle image pendant que l'ancienne version tourne, puis redémarre le service. Le DNS n'est coupé que le temps du redémarrage.
-- INSTALL.md : installation pas à pas sur Debian 12 (Docker) et Debian 13 (Podman, Quadlet).
+- **`--quadlet` fonctionne avec Podman 4.3 (Debian 12)**, qui n'a pas Quadlet : `deploy/podman/container-to-service.awk` traduit `rempart.container` en service systemd classique (`podman run`, `Type=notify`, comme `podman generate systemd --new`). Une clé inconnue arrête la traduction plutôt que de lancer un conteneur sans une option de durcissement. Avec Podman 4.4 ou plus, l'installeur repasse à Quadlet et retire le service classique.
+- INSTALL.md : installation pas à pas sur Debian 12 et 13, avec Podman ou Docker.
 
 ### Rapidité et changements de réseau
 
